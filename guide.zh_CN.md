@@ -11,51 +11,48 @@
 ```html
 <link
   rel="stylesheet"
-  href="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.css"
+  href="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/style.css"
 />
-<script src="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.umd.min.cjs"></script>
 ```
 
 也可以在 URL 中指定具体的版本号，例如：
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/rrweb@0.7.0/dist/rrweb.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.14/dist/rrweb.umd.min.cjs"></script>
 ```
 
 #### 仅引入录制部分
 
-rrweb 代码分为录制和回放两部分，大多数时候用户在被录制的应用中只需要引入录制部分代码，同样可以通过 CDN 安装：
+rrweb 代码分为录制和回放两部分，大多数时候用户在被录制的应用中只需要引入录制部分代码。同样可以通过使用 @rrweb/record 包和 CDN 服务来实现：
 
 ```html
-<script src="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/record/rrweb-record.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@rrweb/record@latest/dist/record.umd.min.cjs"></script>
 ```
 
-#### 其它按需引入方式
+#### 其他包
 
-除了仅包含录制代码的 `record/rrweb-record-min.js` 之外，rrweb 还提供了其它多种可选的打包文件。所有包含 `.min` 的文件为同名文件的压缩版。
+除了 `rrweb` 和 `@rrweb/record` 包之外，rrweb 还提供了其他不同用途的包。
 
-```shell
-# 包含录制、回放、压缩数据、解压缩数据
-rrweb-all.js
-rrweb-all.min.js
-# 包含录制、回放
-rrweb.js
-rrweb.min.js
-# 回放所需的样式文件
-rrweb.min.css
-# 录制
-record/rrweb-record.js
-record/rrweb-record.min.js
-# 压缩数据
-record/rrweb-record-pack.js
-record/rrweb-record-pack.min.js
-# 回放
-replay/rrweb-replay.js
-replay/rrweb-replay.min.js
-# 解压缩数据
-replay/rrweb-replay-unpack.js
-replay/rrweb-replay-unpack.min.js
-```
+- [rrweb](packages/rrweb)：rrweb 的核心包，包括录制和回放功能。
+- [rrweb-player](packages/rrweb-player)：rrweb 的图形用户界面，提供时间线和暂停、快进、加速等按钮。
+- [rrweb-snapshot](packages/rrweb-snapshot)：处理快照和重建功能，将 DOM 及其状态转换为可序列化的数据结构。
+- [rrdom](packages/rrdom)：rrweb 的虚拟 dom 包。
+- [rrdom-nodejs](packages/rrdom-nodejs)：用于服务器端 DOM 操作的 rrdom 的 Node.js 版本。
+- [@rrweb/all](packages/all)：一个包含 `rrweb` 和 `@rrweb/packer`，便于安装的包。
+- [@rrweb/record](packages/record)：一个用于录制 rrweb 会话的包。
+- [@rrweb/replay](packages/replay)：一个用于回放 rrweb 会话的包。
+- [@rrweb/packer](packages/packer)：一个用于打包和解包 rrweb 数据的包。
+- [@rrweb/types](packages/types)：包含 rrweb 包中共享的类型定义。
+- [@rrweb/utils](packages/utils)：包含 rrweb 包中共享的工具函数。
+- [web-extension](packages/web-extension)：rrweb 的网页扩展。
+- [rrvideo](packages/rrvideo)：一个用于处理 rrweb 中视频操作的包。
+- [@rrweb/rrweb-plugin-console-record](packages/plugins/rrweb-plugin-console-record)：一个用于记录控制台日志的插件。
+- [@rrweb/rrweb-plugin-console-replay](packages/plugins/rrweb-plugin-console-replay)：一个用于回放控制台日志的插件。
+- [@rrweb/rrweb-plugin-sequential-id-record](packages/plugins/rrweb-plugin-sequential-id-record)：一个用于记录顺序 ID 的插件。
+- [@rrweb/rrweb-plugin-sequential-id-replay](packages/plugins/rrweb-plugin-sequential-id-replay)：一个用于回放顺序 ID 的插件。
+- [@rrweb/rrweb-plugin-canvas-webrtc-record](packages/plugins/rrweb-plugin-canvas-webrtc-record)：一个用于通过 WebRTC 流式传输 `<canvas>` 的插件。
+- [@rrweb/rrweb-plugin-canvas-webrtc-replay](packages/plugins/rrweb-plugin-canvas-webrtc-replay)：一个用于通过 WebRTC 播放流式 `<canvas>` 的插件。
 
 ### 通过 npm 引入
 
@@ -131,30 +128,35 @@ setInterval(save, 10 * 1000);
 
 `rrweb.record(config)` 的 config 部分接受以下参数
 
-| key                  | 默认值             | 功能                                                                                                                                                                                  |
-| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| emit                 | 必填               | 获取当前录制的数据                                                                                                                                                                    |
-| checkoutEveryNth     | -                  | 每 N 次事件重新制作一次全量快照<br />详见[“重新制作快照”](#重新制作快照)章节                                                                                                          |
-| checkoutEveryNms     | -                  | 每 N 毫秒重新制作一次全量快照<br />详见[“重新制作快照”](#重新制作快照)章节                                                                                                            |
-| blockClass           | 'rr-block'         | 字符串或正则表达式，可用于自定义屏蔽元素的类名，详见[“隐私”](#隐私)章节                                                                                                               |
-| blockSelector        | null               | 所有 element.matches(blockSelector)为 true 的元素都不会被录制，回放时取而代之的是一个同等宽高的占位元素                                                                               |
-| ignoreClass          | 'rr-ignore'        | 字符串或正则表达式，可用于自定义忽略元素的类名，详见[“隐私”](#隐私)章节                                                                                                               |
-| maskTextClass        | 'rr-mask'          | 字符串或正则表达式，可用于自定义忽略元素 text 内容的类名，详见[“隐私”](#隐私)章节                                                                                                     |
-| maskTextSelector     | null               | 所有 element.matches(maskTextSelector)为 true 的元素及其子元素的 text 内容将会被屏蔽                                                                                                  |
-| maskAllInputs        | false              | 将所有输入内容记录为 \*                                                                                                                                                               |
-| maskInputOptions     | { password: true } | 选择将特定类型的输入框内容记录为 \*<br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/588164aa12f1d94576f89ae0210b98f6e971c895/packages/rrweb-snapshot/src/types.ts#L77-L95) |
-| maskInputFn          | -                  | 自定义特定类型的输入框内容记录逻辑                                                                                                                                                    |
-| maskTextFn           | -                  | 自定义文字内容的记录逻辑                                                                                                                                                              |
-| slimDOMOptions       | {}                 | 去除 DOM 中不必要的部分 <br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/588164aa12f1d94576f89ae0210b98f6e971c895/packages/rrweb-snapshot/src/types.ts#L97-L108)           |
-| inlineStylesheet     | true               | 是否将样式表内联                                                                                                                                                                      |
-| hooks                | {}                 | 各类事件的回调<br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/9488deb6d54a5f04350c063d942da5e96ab74075/src/types.ts#L207)                                                 |
-| packFn               | -                  | 数据压缩函数，详见[优化存储策略](./docs/recipes/optimize-storage.zh_CN.md)                                                                                                            |
-| sampling             | -                  | 数据抽样策略，详见[优化存储策略](./docs/recipes/optimize-storage.zh_CN.md)                                                                                                            |
-| recordCanvas         | false              | 是否记录 canvas 内容, 可用选项：false, true                                                                                                                                           |
-| inlineImages         | false              | 是否将图片内容记内联录制                                                                                                                                                              |
-| collectFonts         | false              | 是否记录页面中的字体文件                                                                                                                                                              |
-| userTriggeredOnInput | false              | [什么是 `userTriggered`](https://github.com/rrweb-io/rrweb/pull/495)                                                                                                                  |
-| plugins              | []                 | 加载插件以获得额外的录制功能. [什么是插件？](./docs/recipes/plugin.zh_CN.md)                                                                                                          |
+| key                      | 默认值             | 功能                                                                                                                                                                                  |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| emit                     | 必填               | 获取当前录制的数据                                                                                                                                                                    |
+| checkoutEveryNth         | -                  | 每 N 次事件重新制作一次全量快照<br />详见[“重新制作快照”](#重新制作快照)章节                                                                                                          |
+| checkoutEveryNms         | -                  | 每 N 毫秒重新制作一次全量快照<br />详见[“重新制作快照”](#重新制作快照)章节                                                                                                            |
+| blockClass               | 'rr-block'         | 字符串或正则表达式，可用于自定义屏蔽元素的类名，详见[“隐私”](#隐私)章节                                                                                                               |
+| blockSelector            | null               | 所有 element.matches(blockSelector)为 true 的元素都不会被录制，回放时取而代之的是一个同等宽高的占位元素                                                                               |
+| ignoreClass              | 'rr-ignore'        | 字符串或正则表达式，可用于自定义忽略元素的类名，详见[“隐私”](#隐私)章节                                                                                                               |
+| ignoreCSSAttributes      | null               | 应该被忽略的 CSS 属性数组                                                                                                                                                             |
+| maskTextClass            | 'rr-mask'          | 字符串或正则表达式，可用于自定义忽略元素 text 内容的类名，详见[“隐私”](#隐私)章节                                                                                                     |
+| maskTextSelector         | null               | 所有 element.matches(maskTextSelector)为 true 的元素及其子元素的 text 内容将会被屏蔽                                                                                                  |
+| maskAllInputs            | false              | 将所有输入内容记录为 \*                                                                                                                                                               |
+| maskInputOptions         | { password: true } | 选择将特定类型的输入框内容记录为 \*<br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/588164aa12f1d94576f89ae0210b98f6e971c895/packages/rrweb-snapshot/src/types.ts#L77-L95) |
+| maskInputFn              | -                  | 自定义特定类型的输入框内容记录逻辑                                                                                                                                                    |
+| maskTextFn               | -                  | 自定义文字内容的记录逻辑                                                                                                                                                              |
+| slimDOMOptions           | {}                 | 去除 DOM 中不必要的部分 <br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/588164aa12f1d94576f89ae0210b98f6e971c895/packages/rrweb-snapshot/src/types.ts#L97-L108)           |
+| inlineStylesheet         | true               | 是否将样式表内联                                                                                                                                                                      |
+| hooks                    | {}                 | 各类事件的回调<br />类型详见[列表](https://github.com/rrweb-io/rrweb/blob/9488deb6d54a5f04350c063d942da5e96ab74075/src/types.ts#L207)                                                 |
+| packFn                   | -                  | 数据压缩函数，详见[优化存储策略](./docs/recipes/optimize-storage.zh_CN.md)                                                                                                            |
+| sampling                 | -                  | 数据抽样策略，详见[优化存储策略](./docs/recipes/optimize-storage.zh_CN.md)                                                                                                            |
+| dataURLOptions           | {}                 | Canvas 图像快照的格式和质量,这个参数将传递给 OffscreenCanvas.convertToBlob()，使用这个参数能有效减小录制数据的大小                                                                    |
+| recordCanvas             | false              | 是否记录 canvas 内容, 可用选项：`false`, `true`                                                                                                                                       |
+| recordCrossOriginIframes | false              | 是否记录 cross origin iframes。 必须在每个子 iframe 中注入 rrweb 才能使其工作。 可用选项：`false`, `true`                                                                             |
+| recordAfter              | 'load'             | 如果 document 还没有加载完成，recorder 将会在指定的事件触发后开始录制。可用选项： `DOMContentLoaded`, `load`                                                                          |
+| inlineImages             | false              | 是否将图片内容记内联录制                                                                                                                                                              |
+| collectFonts             | false              | 是否记录页面中的字体文件                                                                                                                                                              |
+| userTriggeredOnInput     | false              | [什么是 `userTriggered`](https://github.com/rrweb-io/rrweb/pull/495)                                                                                                                  |
+| plugins                  | []                 | 加载插件以获得额外的录制功能. [什么是插件？](./docs/recipes/plugin.zh_CN.md)                                                                                                          |
+| errorHandler             | -                  | 一个可以定制化处理错误的回调函数，它的参数是错误对象。如果 rrweb recorder 内部的某些内容抛出错误，则会调用该回调。                                                                    |
 
 #### 隐私
 
@@ -247,7 +249,7 @@ window.onerror = function () {
 ```html
 <link
   rel="stylesheet"
-  href="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/rrweb.min.css"
+  href="https://cdn.jsdelivr.net/npm/rrweb@latest/dist/style.css"
 />
 ```
 
@@ -276,6 +278,9 @@ replayer.pause();
 
 // 暂停至第 5 秒处
 replayer.pause(5000);
+
+// 销毁播放器 (提示： 这个操作不可逆)
+replayer.destroy();
 ```
 
 #### 配置参数
@@ -300,6 +305,7 @@ replayer.pause(5000);
 | unpackFn            | -             | 数据解压缩函数，详见[优化存储策略](./docs/recipes/optimize-storage.zh_CN.md)                                                                                                                         |
 | plugins             | []            | 加载插件以获得额外的回放功能. [什么是插件？](./docs/recipes/plugin.zh_CN.md)                                                                                                                         |
 | useVirtualDom       | true          | 在播放器跳转到一个新的时间点的过程中，是否使用 Virtual Dom 优化                                                                                                                                      |
+| logger              | console       | 当播放器出现警告或错误时用来打印日志的对象                                                                                                                                                           |
 
 #### 使用 rrweb-player
 
@@ -384,6 +390,7 @@ replayer.on(EVENT_NAME, (payload) => {
 | mouse-interaction      | 回放鼠标交互事件       | { type, target }  |
 | event-cast             | 回放 event             | event             |
 | custom-event           | 回放自定义事件         | event             |
+| destroy                | 销毁播放器             | -                 |
 
 使用 `rrweb-player` 时，也可以通过 `addEventListener` API 使用相同的事件功能，并且会获得 3 个额外的事件：
 

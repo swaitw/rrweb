@@ -4,21 +4,19 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as puppeteer from 'puppeteer';
-import * as rollup from 'rollup';
-import resolve from '@rollup/plugin-node-resolve';
-import * as typescript from 'rollup-plugin-typescript2';
+import { vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { buildNodeWithSN, Mirror } from 'rrweb-snapshot';
 import {
   cdataNode,
   commentNode,
   documentNode,
   documentTypeNode,
   elementNode,
-  Mirror,
   NodeType,
   NodeType as RRNodeType,
   textNode,
-} from 'rrweb-snapshot';
+} from '@rrweb/types';
 import {
   buildFromDom,
   buildFromNode,
@@ -30,7 +28,6 @@ import {
   BaseRRNode as RRNode,
 } from '../src';
 
-const _typescript = (typescript as unknown) as typeof typescript.default;
 const printRRDomCode = `
 /**
  * Print the RRDom as a string.
@@ -53,6 +50,7 @@ function walk(node, mirror, blankSpace) {
 `;
 
 describe('RRDocument for browser environment', () => {
+  vi.setConfig({ testTimeout: 60_000 });
   let mirror: Mirror;
   beforeEach(() => {
     mirror = new Mirror();
@@ -60,7 +58,7 @@ describe('RRDocument for browser environment', () => {
 
   describe('create a RRNode from a real Node', () => {
     it('should support quicksmode documents', () => {
-      // seperate jsdom document as changes to the document would otherwise bleed into other tests
+      // separate jsdom document as changes to the document would otherwise bleed into other tests
       const dom = new JSDOM();
       const document = dom.window.document;
 
@@ -78,60 +76,60 @@ describe('RRDocument for browser environment', () => {
       const rrdom = new RRDocument();
       let rrNode = buildFromNode(document, rrdom, mirror)!;
       expect(mirror.getMeta(document)).toBeDefined();
-      expect(mirror.getId(document)).toEqual(-1);
+      expect(mirror.getId(document)).toEqual(-2);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.Document);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-1);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-2);
       expect(rrNode).toBe(rrdom);
 
       // build from document type
       expect(mirror.getMeta(document.doctype!)).toBeNull();
       rrNode = buildFromNode(document.doctype!, rrdom, mirror)!;
       expect(mirror.getMeta(document.doctype!)).toBeDefined();
-      expect(mirror.getId(document.doctype)).toEqual(-2);
+      expect(mirror.getId(document.doctype)).toEqual(-3);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(
         RRNodeType.DocumentType,
       );
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-2);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-3);
 
       // build from element
       expect(mirror.getMeta(document.documentElement)).toBeNull();
       rrNode = buildFromNode(
-        (document.documentElement as unknown) as Node,
+        document.documentElement as unknown as Node,
         rrdom,
         mirror,
       )!;
       expect(mirror.getMeta(document.documentElement)).toBeDefined();
-      expect(mirror.getId(document.documentElement)).toEqual(-3);
+      expect(mirror.getId(document.documentElement)).toEqual(-4);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.Element);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-3);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-4);
 
       // build from text
       const text = document.createTextNode('text');
       expect(mirror.getMeta(text)).toBeNull();
       rrNode = buildFromNode(text, rrdom, mirror)!;
       expect(mirror.getMeta(text)).toBeDefined();
-      expect(mirror.getId(text)).toEqual(-4);
+      expect(mirror.getId(text)).toEqual(-5);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.Text);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-4);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-5);
 
       // build from comment
       const comment = document.createComment('comment');
       expect(mirror.getMeta(comment)).toBeNull();
       rrNode = buildFromNode(comment, rrdom, mirror)!;
       expect(mirror.getMeta(comment)).toBeDefined();
-      expect(mirror.getId(comment)).toEqual(-5);
+      expect(mirror.getId(comment)).toEqual(-6);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.Comment);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-5);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-6);
 
       // build from CDATASection
       const xmlDoc = new DOMParser().parseFromString(
@@ -144,11 +142,11 @@ describe('RRDocument for browser environment', () => {
       expect(mirror.getMeta(cdataSection)).toBeNull();
       rrNode = buildFromNode(cdataSection, rrdom, mirror)!;
       expect(mirror.getMeta(cdataSection)).toBeDefined();
-      expect(mirror.getId(cdataSection)).toEqual(-6);
+      expect(mirror.getId(cdataSection)).toEqual(-7);
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.CDATA);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-6);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-7);
       expect(rrNode.textContent).toEqual(cdata);
     });
 
@@ -184,8 +182,8 @@ describe('RRDocument for browser environment', () => {
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
       expect(rrdom.mirror.getMeta(rrNode)!.type).toEqual(RRNodeType.Document);
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-1);
-      expect(mirror.getId(iframe.contentDocument)).toEqual(-1);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-2);
+      expect(mirror.getId(iframe.contentDocument)).toEqual(-2);
       expect(rrNode).toBe(RRIFrame.contentDocument);
     });
 
@@ -203,11 +201,38 @@ describe('RRDocument for browser environment', () => {
       )!;
       expect(rrNode).not.toBeNull();
       expect(rrdom.mirror.getMeta(rrNode)).toBeDefined();
-      expect(rrdom.mirror.getId(rrNode)).toEqual(-1);
-      expect(mirror.getId(div.shadowRoot)).toEqual(-1);
+      expect(rrdom.mirror.getId(rrNode)).toEqual(-2);
+      expect(mirror.getId(div.shadowRoot)).toEqual(-2);
       expect(rrNode.RRNodeType).toEqual(RRNodeType.Element);
       expect((rrNode as RRElement).tagName).toEqual('SHADOWROOT');
       expect(rrNode).toBe(parentRRNode.shadowRoot);
+    });
+
+    it('can rebuild blocked element with correct dimensions', () => {
+      // @ts-expect-error Testing buildNodeWithSN with rr elements
+      const node = buildNodeWithSN(
+        {
+          id: 1,
+          tagName: 'svg',
+          type: NodeType.Element,
+          isSVG: true,
+          attributes: {
+            rr_width: '50px',
+            rr_height: '50px',
+          },
+          childNodes: [],
+        },
+        {
+          // @ts-expect-error
+          doc: new RRDocument(),
+          mirror,
+          blockSelector: '*',
+          slimDOMOptions: {},
+        },
+      ) as RRElement;
+
+      expect(node.style.width).toBe('50px');
+      expect(node.style.height).toBe('50px');
     });
   });
 
@@ -218,22 +243,10 @@ describe('RRDocument for browser environment', () => {
 
     beforeAll(async () => {
       browser = await puppeteer.launch();
-      const bundle = await rollup.rollup({
-        input: path.resolve(__dirname, '../src/index.ts'),
-        plugins: [
-          (resolve() as unknown) as rollup.Plugin,
-          (_typescript({
-            tsconfigOverride: { compilerOptions: { module: 'ESNext' } },
-          }) as unknown) as rollup.Plugin,
-        ],
-      });
-      const {
-        output: [{ code: _code }],
-      } = await bundle.generate({
-        name: 'rrdom',
-        format: 'iife',
-      });
-      code = _code;
+      code = fs.readFileSync(
+        path.resolve(__dirname, '../dist/rrdom.umd.cjs'),
+        'utf8',
+      );
     });
     afterAll(async () => {
       await browser.close();
@@ -296,7 +309,7 @@ describe('RRDocument for browser environment', () => {
   describe('RRDocument build for virtual dom', () => {
     it('can access a unique, decremented unserializedId every time', () => {
       const node = new RRDocument();
-      for (let i = 1; i <= 100; i++) expect(node.unserializedId).toBe(-i);
+      for (let i = 2; i <= 100; i++) expect(node.unserializedId).toBe(-i);
     });
 
     it('can create a new RRDocument', () => {
@@ -357,12 +370,12 @@ describe('RRDocument for browser environment', () => {
       const documentType = dom.createDocumentType('html', '', '');
       dom.appendChild(documentType);
       expect(dom.childNodes[0]).toBe(documentType);
-      expect(dom.unserializedId).toBe(-1);
       expect(dom.unserializedId).toBe(-2);
+      expect(dom.unserializedId).toBe(-3);
       expect(dom.close());
       expect(dom.open());
       expect(dom.childNodes.length).toEqual(0);
-      expect(dom.unserializedId).toBe(-1);
+      expect(dom.unserializedId).toBe(-2);
     });
 
     it('can execute a dummy getContext function in RRCanvasElement', () => {
@@ -395,7 +408,7 @@ describe('RRDocument for browser environment', () => {
         expect(dom.mirror.getId(node1)).toEqual(0);
         const node2 = dom.createTextNode('text');
         expect(dom.mirror.getId(node2)).toEqual(-1);
-        expect(dom.mirror.getId((null as unknown) as RRNode)).toEqual(-1);
+        expect(dom.mirror.getId(null as unknown as RRNode)).toEqual(-1);
       });
 
       it('has() should return whether the mirror has an ID', () => {

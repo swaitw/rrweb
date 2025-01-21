@@ -1,14 +1,17 @@
-import { NodeType as RRNodeType, Mirror as NodeMirror } from 'rrweb-snapshot';
+import { type Mirror as NodeMirror } from 'rrweb-snapshot';
+import { NodeType as RRNodeType } from '@rrweb/types';
 import type {
   canvasMutationData,
   canvasEventWithTime,
+  elementNode,
   inputData,
   scrollData,
-} from 'rrweb/src/types';
+  styleDeclarationData,
+  styleSheetRuleData,
+} from '@rrweb/types';
 import type {
   IRRCDATASection,
   IRRComment,
-  IRRDocument,
   IRRDocumentType,
   IRRElement,
   IRRNode,
@@ -16,6 +19,7 @@ import type {
 } from './document';
 import type {
   RRCanvasElement,
+  RRDialogElement,
   RRElement,
   RRIFrameElement,
   RRMediaElement,
@@ -79,133 +83,249 @@ export type ReplayerHandler = {
   ) => void;
   applyInput: (data: inputData) => void;
   applyScroll: (data: scrollData, isSync: boolean) => void;
+  applyStyleSheetMutation: (
+    data: styleDeclarationData | styleSheetRuleData,
+    styleSheet: CSSStyleSheet,
+  ) => void;
+  // Similar to the `afterAppend` callback in the `rrweb-snapshot` package. It's a postorder traversal of the newly appended nodes.
+  afterAppend?(node: Node, id: number): void;
 };
 
+// A set contains newly appended nodes. It's used to make sure the afterAppend callback can iterate newly appended nodes in the same traversal order as that in the `rrweb-snapshot` package.
+let createdNodeSet: WeakSet<Node> | null = null;
+
+/**
+ * Make the old tree to have the same structure and properties as the new tree with the diff algorithm.
+ * @param oldTree - The old tree to be modified.
+ * @param newTree - The new tree which the old tree will be modified to.
+ * @param replayer - A slimmed replayer instance including the mirror of the old tree.
+ * @param rrnodeMirror - The mirror of the new tree.
+ */
 export function diff(
   oldTree: Node,
   newTree: IRRNode,
   replayer: ReplayerHandler,
-  rrnodeMirror?: Mirror,
+  rrnodeMirror: Mirror = (newTree as RRDocument).mirror ||
+    (newTree.ownerDocument as RRDocument).mirror,
 ) {
-  const oldChildren = oldTree.childNodes;
-  const newChildren = newTree.childNodes;
-  rrnodeMirror =
-    rrnodeMirror ||
-    (newTree as RRDocument).mirror ||
-    (newTree.ownerDocument as RRDocument).mirror;
+  oldTree = diffBeforeUpdatingChildren(
+    oldTree,
+    newTree,
+    replayer,
+    rrnodeMirror,
+  );
 
-  if (oldChildren.length > 0 || newChildren.length > 0) {
-    diffChildren(
-      Array.from(oldChildren),
-      newChildren,
-      oldTree,
-      replayer,
+  diffChildren(oldTree, newTree, replayer, rrnodeMirror);
+
+  diffAfterUpdatingChildren(oldTree, newTree, replayer);
+}
+
+/**
+ * Do some preparation work before updating the children of the old tree.
+ */
+function diffBeforeUpdatingChildren(
+  oldTree: Node,
+  newTree: IRRNode,
+  replayer: ReplayerHandler,
+  rrnodeMirror: Mirror,
+) {
+  if (replayer.afterAppend && !createdNodeSet) {
+    createdNodeSet = new WeakSet();
+    setTimeout(() => {
+      createdNodeSet = null;
+    }, 0);
+  }
+  // If the Mirror data has some flaws, the diff function may throw errors. We check the node consistency here to make it robust.
+  if (!sameNodeType(oldTree, newTree)) {
+    const calibratedOldTree = createOrGetNode(
+      newTree,
+      replayer.mirror,
       rrnodeMirror,
     );
+    oldTree.parentNode?.replaceChild(calibratedOldTree, oldTree);
+    oldTree = calibratedOldTree;
   }
-
-  let inputDataToApply = null,
-    scrollDataToApply = null;
   switch (newTree.RRNodeType) {
     case RRNodeType.Document: {
-      const newRRDocument = newTree as IRRDocument;
-      scrollDataToApply = (newRRDocument as RRDocument).scrollData;
+      /**
+       * Special cases for updating the document node:
+       * Case 1: If the oldTree is the content document of an iframe element and its content (HTML, HEAD, and BODY) is automatically mounted by browsers, we need to remove them to avoid unexpected behaviors. e.g. Selector matches may be case insensitive.
+       * Case 2: The newTree has a different serialized Id (a different document object), we need to reopen it and update the nodeMirror.
+       */
+      if (!nodeMatching(oldTree, newTree, replayer.mirror, rrnodeMirror)) {
+        const newMeta = rrnodeMirror.getMeta(newTree);
+        if (newMeta) {
+          replayer.mirror.removeNodeFromMap(oldTree);
+          (oldTree as Document).close();
+          (oldTree as Document).open();
+          replayer.mirror.add(oldTree, newMeta);
+          createdNodeSet?.add(oldTree);
+        }
+      }
       break;
     }
     case RRNodeType.Element: {
       const oldElement = oldTree as HTMLElement;
       const newRRElement = newTree as IRRElement;
+      switch (newRRElement.tagName) {
+        case 'IFRAME': {
+          const oldContentDocument = (oldTree as HTMLIFrameElement)
+            .contentDocument;
+          // If the iframe is cross-origin, the contentDocument will be null.
+          if (!oldContentDocument) break;
+          // IFrame element doesn't have child nodes, so here we update its content document separately.
+          diff(
+            oldContentDocument,
+            (newTree as RRIFrameElement).contentDocument,
+            replayer,
+            rrnodeMirror,
+          );
+          break;
+        }
+      }
+      if (newRRElement.shadowRoot) {
+        if (!oldElement.shadowRoot) oldElement.attachShadow({ mode: 'open' });
+        diffChildren(
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          oldElement.shadowRoot!,
+          newRRElement.shadowRoot,
+          replayer,
+          rrnodeMirror,
+        );
+      }
+      /**
+       * Attributes and styles of the old element need to be updated before updating its children because of an edge case:
+       * `applyScroll` may fail in `diffAfterUpdatingChildren` when the height of a node when `applyScroll` is called may be incorrect if
+       * 1. its parent node contains styles that affects the targeted node's height
+       * 2. the CSS selector is targeting an attribute of the parent node
+       * by running `diffProps` on the parent node before `diffChildren` is called,
+       * we can ensure that the correct attributes (and therefore styles) have applied to parent nodes
+       */
       diffProps(oldElement, newRRElement, rrnodeMirror);
-      scrollDataToApply = (newRRElement as RRElement).scrollData;
-      inputDataToApply = (newRRElement as RRElement).inputData;
+      break;
+    }
+  }
+  return oldTree;
+}
+
+/**
+ * Finish the diff work after updating the children of the old tree.
+ */
+function diffAfterUpdatingChildren(
+  oldTree: Node,
+  newTree: IRRNode,
+  replayer: ReplayerHandler,
+) {
+  switch (newTree.RRNodeType) {
+    case RRNodeType.Document: {
+      const scrollData = (newTree as RRDocument).scrollData;
+      scrollData && replayer.applyScroll(scrollData, true);
+      break;
+    }
+    case RRNodeType.Element: {
+      const oldElement = oldTree as HTMLElement;
+      const newRRElement = newTree as RRElement;
+      newRRElement.scrollData &&
+        replayer.applyScroll(newRRElement.scrollData, true);
+      /**
+       * Input data need to get applied after all children of this node are updated.
+       * Otherwise when we set a value for a select element whose options are empty, the value won't actually update.
+       */
+      newRRElement.inputData && replayer.applyInput(newRRElement.inputData);
       switch (newRRElement.tagName) {
         case 'AUDIO':
         case 'VIDEO': {
           const oldMediaElement = oldTree as HTMLMediaElement;
-          const newMediaRRElement = newRRElement as RRMediaElement;
+          const newMediaRRElement = newRRElement as unknown as RRMediaElement;
           if (newMediaRRElement.paused !== undefined)
             newMediaRRElement.paused
-              ? oldMediaElement.pause()
-              : oldMediaElement.play();
+              ? void oldMediaElement.pause()
+              : void oldMediaElement.play();
           if (newMediaRRElement.muted !== undefined)
             oldMediaElement.muted = newMediaRRElement.muted;
           if (newMediaRRElement.volume !== undefined)
             oldMediaElement.volume = newMediaRRElement.volume;
           if (newMediaRRElement.currentTime !== undefined)
             oldMediaElement.currentTime = newMediaRRElement.currentTime;
+          if (newMediaRRElement.playbackRate !== undefined)
+            oldMediaElement.playbackRate = newMediaRRElement.playbackRate;
+          if (newMediaRRElement.loop !== undefined)
+            oldMediaElement.loop = newMediaRRElement.loop;
           break;
         }
-        case 'CANVAS':
-          (newTree as RRCanvasElement).canvasMutations.forEach(
-            (canvasMutation) =>
-              replayer.applyCanvas(
-                canvasMutation.event,
-                canvasMutation.mutation,
-                oldTree as HTMLCanvasElement,
-              ),
+        case 'CANVAS': {
+          const rrCanvasElement = newTree as RRCanvasElement;
+          // This canvas element is created with initial data in an iframe element. https://github.com/rrweb-io/rrweb/pull/944
+          if (rrCanvasElement.rr_dataURL !== null) {
+            const image = document.createElement('img');
+            image.onload = () => {
+              const ctx = (oldElement as HTMLCanvasElement).getContext('2d');
+              if (ctx) {
+                ctx.drawImage(image, 0, 0, image.width, image.height);
+              }
+            };
+            image.src = rrCanvasElement.rr_dataURL;
+          }
+          rrCanvasElement.canvasMutations.forEach((canvasMutation) =>
+            replayer.applyCanvas(
+              canvasMutation.event,
+              canvasMutation.mutation,
+              oldTree as HTMLCanvasElement,
+            ),
           );
           break;
-        case 'STYLE':
-          applyVirtualStyleRulesToNode(
-            oldElement as HTMLStyleElement,
-            (newTree as RRStyleElement).rules,
-          );
+        }
+        // Props of style elements have to be updated after all children are updated. Otherwise the props can be overwritten by textContent.
+        case 'STYLE': {
+          const styleSheet = (oldElement as HTMLStyleElement).sheet;
+          styleSheet &&
+            (newTree as RRStyleElement).rules.forEach((data) =>
+              replayer.applyStyleSheetMutation(data, styleSheet),
+            );
           break;
-      }
-      if (newRRElement.shadowRoot) {
-        if (!oldElement.shadowRoot) oldElement.attachShadow({ mode: 'open' });
-        const oldChildren = oldElement.shadowRoot!.childNodes;
-        const newChildren = newRRElement.shadowRoot.childNodes;
-        if (oldChildren.length > 0 || newChildren.length > 0)
-          diffChildren(
-            Array.from(oldChildren),
-            newChildren,
-            oldElement.shadowRoot!,
-            replayer,
-            rrnodeMirror,
-          );
+        }
+        case 'DIALOG': {
+          const dialog = oldElement as HTMLDialogElement;
+          const rrDialog = newRRElement as unknown as RRDialogElement;
+          const wasOpen = dialog.open;
+          const wasModal = dialog.matches('dialog:modal');
+          const shouldBeOpen = rrDialog.open;
+          const shouldBeModal = rrDialog.isModal;
+
+          const modalChanged = wasModal !== shouldBeModal;
+          const openChanged = wasOpen !== shouldBeOpen;
+
+          if (modalChanged || (wasOpen && openChanged)) dialog.close();
+          if (shouldBeOpen && (openChanged || modalChanged)) {
+            try {
+              if (shouldBeModal) dialog.showModal();
+              else dialog.show();
+            } catch (e) {
+              console.warn(e);
+            }
+          }
+
+          break;
+        }
       }
       break;
     }
     case RRNodeType.Text:
     case RRNodeType.Comment:
-    case RRNodeType.CDATA:
+    case RRNodeType.CDATA: {
       if (
         oldTree.textContent !==
         (newTree as IRRText | IRRComment | IRRCDATASection).data
       )
-        oldTree.textContent = (newTree as
-          | IRRText
-          | IRRComment
-          | IRRCDATASection).data;
+        oldTree.textContent = (
+          newTree as IRRText | IRRComment | IRRCDATASection
+        ).data;
       break;
-    default:
-  }
-
-  scrollDataToApply && replayer.applyScroll(scrollDataToApply, true);
-  /**
-   * Input data need to get applied after all children of this node are updated.
-   * Otherwise when we set a value for a select element whose options are empty, the value won't actually update.
-   */
-  inputDataToApply && replayer.applyInput(inputDataToApply);
-
-  // IFrame element doesn't have child nodes.
-  if (newTree.nodeName === 'IFRAME') {
-    const oldContentDocument = (oldTree as HTMLIFrameElement).contentDocument;
-    const newIFrameElement = newTree as RRIFrameElement;
-    // If the iframe is cross-origin, the contentDocument will be null.
-    if (oldContentDocument) {
-      const sn = rrnodeMirror.getMeta(newIFrameElement.contentDocument);
-      if (sn) {
-        replayer.mirror.add(oldContentDocument, { ...sn });
-      }
-      diff(
-        oldContentDocument,
-        newIFrameElement.contentDocument,
-        replayer,
-        rrnodeMirror,
-      );
     }
+  }
+  if (createdNodeSet?.has(oldTree)) {
+    createdNodeSet.delete(oldTree);
+    replayer.afterAppend?.(oldTree, replayer.mirror.getId(oldTree));
   }
 }
 
@@ -219,8 +339,8 @@ function diffProps(
 
   for (const name in newAttributes) {
     const newValue = newAttributes[name];
-    const sn = rrnodeMirror.getMeta(newTree);
-    if (sn && 'isSVG' in sn && sn.isSVG && NAMESPACES[name])
+    const sn = rrnodeMirror.getMeta(newTree) as elementNode | null;
+    if (sn?.isSVG && NAMESPACES[name])
       oldTree.setAttributeNS(NAMESPACES[name], name, newValue);
     else if (newTree.tagName === 'CANVAS' && name === 'rr_dataURL') {
       const image = document.createElement('img');
@@ -231,23 +351,34 @@ function diffProps(
           ctx.drawImage(image, 0, 0, image.width, image.height);
         }
       };
-    } else oldTree.setAttribute(name, newValue);
+    } else if (newTree.tagName === 'IFRAME' && name === 'srcdoc') continue;
+    else {
+      try {
+        oldTree.setAttribute(name, newValue);
+      } catch (err) {
+        // We want to continue diffing so we quietly catch
+        // this exception. Otherwise, this can throw and bubble up to
+        // the `ReplayerEvents.Flush` listener and break rendering
+        console.warn(err);
+      }
+    }
   }
 
   for (const { name } of Array.from(oldAttributes))
     if (!(name in newAttributes)) oldTree.removeAttribute(name);
-
   newTree.scrollLeft && (oldTree.scrollLeft = newTree.scrollLeft);
   newTree.scrollTop && (oldTree.scrollTop = newTree.scrollTop);
 }
 
 function diffChildren(
-  oldChildren: (Node | undefined)[],
-  newChildren: IRRNode[],
-  parentNode: Node,
+  oldTree: Node,
+  newTree: IRRNode,
   replayer: ReplayerHandler,
   rrnodeMirror: Mirror,
 ) {
+  const oldChildren: (Node | undefined)[] = Array.from(oldTree.childNodes);
+  const newChildren = newTree.childNodes;
+  if (oldChildren.length === 0 && newChildren.length === 0) return;
   let oldStartIndex = 0,
     oldEndIndex = oldChildren.length - 1,
     newStartIndex = 0,
@@ -257,39 +388,49 @@ function diffChildren(
     newStartNode = newChildren[newStartIndex],
     newEndNode = newChildren[newEndIndex];
   let oldIdToIndex: Record<number, number> | undefined = undefined,
-    indexInOld;
+    indexInOld: number | undefined = undefined;
   while (oldStartIndex <= oldEndIndex && newStartIndex <= newEndIndex) {
     if (oldStartNode === undefined) {
       oldStartNode = oldChildren[++oldStartIndex];
     } else if (oldEndNode === undefined) {
       oldEndNode = oldChildren[--oldEndIndex];
     } else if (
-      replayer.mirror.getId(oldStartNode) === rrnodeMirror.getId(newStartNode)
+      // same first node?
+      nodeMatching(oldStartNode, newStartNode, replayer.mirror, rrnodeMirror)
     ) {
-      diff(oldStartNode, newStartNode, replayer, rrnodeMirror);
       oldStartNode = oldChildren[++oldStartIndex];
       newStartNode = newChildren[++newStartIndex];
     } else if (
-      replayer.mirror.getId(oldEndNode) === rrnodeMirror.getId(newEndNode)
+      // same last node?
+      nodeMatching(oldEndNode, newEndNode, replayer.mirror, rrnodeMirror)
     ) {
-      diff(oldEndNode, newEndNode, replayer, rrnodeMirror);
       oldEndNode = oldChildren[--oldEndIndex];
       newEndNode = newChildren[--newEndIndex];
     } else if (
-      replayer.mirror.getId(oldStartNode) === rrnodeMirror.getId(newEndNode)
+      // is the first old node the same as the last new node?
+      nodeMatching(oldStartNode, newEndNode, replayer.mirror, rrnodeMirror)
     ) {
-      parentNode.insertBefore(oldStartNode, oldEndNode.nextSibling);
-      diff(oldStartNode, newEndNode, replayer, rrnodeMirror);
+      try {
+        oldTree.insertBefore(oldStartNode, oldEndNode.nextSibling);
+      } catch (e) {
+        console.warn(e);
+      }
       oldStartNode = oldChildren[++oldStartIndex];
       newEndNode = newChildren[--newEndIndex];
     } else if (
-      replayer.mirror.getId(oldEndNode) === rrnodeMirror.getId(newStartNode)
+      // is the last old node the same as the first new node?
+      nodeMatching(oldEndNode, newStartNode, replayer.mirror, rrnodeMirror)
     ) {
-      parentNode.insertBefore(oldEndNode, oldStartNode);
-      diff(oldEndNode, newStartNode, replayer, rrnodeMirror);
+      try {
+        oldTree.insertBefore(oldEndNode, oldStartNode);
+      } catch (e) {
+        console.warn(e);
+      }
       oldEndNode = oldChildren[--oldEndIndex];
       newStartNode = newChildren[++newStartIndex];
     } else {
+      // none of the elements matched
+
       if (!oldIdToIndex) {
         oldIdToIndex = {};
         for (let i = oldStartIndex; i <= oldEndIndex; i++) {
@@ -299,10 +440,17 @@ function diffChildren(
         }
       }
       indexInOld = oldIdToIndex[rrnodeMirror.getId(newStartNode)];
-      if (indexInOld) {
-        const nodeToMove = oldChildren[indexInOld]!;
-        parentNode.insertBefore(nodeToMove, oldStartNode);
-        diff(nodeToMove, newStartNode, replayer, rrnodeMirror);
+      const nodeToMove = oldChildren[indexInOld];
+      if (
+        indexInOld !== undefined &&
+        nodeToMove &&
+        nodeMatching(nodeToMove, newStartNode, replayer.mirror, rrnodeMirror)
+      ) {
+        try {
+          oldTree.insertBefore(nodeToMove, oldStartNode);
+        } catch (e) {
+          console.warn(e);
+        }
         oldChildren[indexInOld] = undefined;
       } else {
         const newNode = createOrGetNode(
@@ -311,52 +459,75 @@ function diffChildren(
           rrnodeMirror,
         );
 
-        /**
-         * A mounted iframe element has an automatically created HTML element.
-         * We should delete it before insert a serialized one. Otherwise, an error 'Only one element on document allowed' will be thrown.
-         */
         if (
-          parentNode.nodeName === '#document' &&
-          replayer.mirror.getMeta(newNode)?.type === RRNodeType.Element &&
-          (parentNode as Document).documentElement
+          oldTree.nodeName === '#document' &&
+          oldStartNode &&
+          /**
+           * Special case 1: one document isn't allowed to have two doctype nodes at the same time, so we need to remove the old one first before inserting the new one.
+           * How this case happens: A parent document in the old tree already has a doctype node with an id e.g. #1. A new full snapshot rebuilds the replayer with a new doctype node with another id #2. According to the algorithm, the new doctype node will be inserted before the old one, which is not allowed by the Document standard.
+           */
+          ((newNode.nodeType === newNode.DOCUMENT_TYPE_NODE &&
+            oldStartNode.nodeType === oldStartNode.DOCUMENT_TYPE_NODE) ||
+            /**
+             * Special case 2: one document isn't allowed to have two HTMLElements at the same time, so we need to remove the old one first before inserting the new one.
+             * How this case happens: A mounted iframe element has an automatically created HTML element. We should delete it before inserting a serialized one. Otherwise, an error 'Only one element on document allowed' will be thrown.
+             */
+            (newNode.nodeType === newNode.ELEMENT_NODE &&
+              oldStartNode.nodeType === oldStartNode.ELEMENT_NODE))
         ) {
-          parentNode.removeChild((parentNode as Document).documentElement);
-          oldChildren[oldStartIndex] = undefined;
-          oldStartNode = undefined;
+          oldTree.removeChild(oldStartNode);
+          replayer.mirror.removeNodeFromMap(oldStartNode);
+          oldStartNode = oldChildren[++oldStartIndex];
         }
-        parentNode.insertBefore(newNode, oldStartNode || null);
-        diff(newNode, newStartNode, replayer, rrnodeMirror);
+
+        try {
+          oldTree.insertBefore(newNode, oldStartNode || null);
+        } catch (e) {
+          console.warn(e);
+        }
       }
       newStartNode = newChildren[++newStartIndex];
     }
   }
   if (oldStartIndex > oldEndIndex) {
     const referenceRRNode = newChildren[newEndIndex + 1];
-    let referenceNode = null;
+    let referenceNode: Node | null = null;
     if (referenceRRNode)
-      parentNode.childNodes.forEach((child) => {
-        if (
-          replayer.mirror.getId(child) === rrnodeMirror.getId(referenceRRNode)
-        )
-          referenceNode = child;
-      });
+      referenceNode = replayer.mirror.getNode(
+        rrnodeMirror.getId(referenceRRNode),
+      );
     for (; newStartIndex <= newEndIndex; ++newStartIndex) {
       const newNode = createOrGetNode(
         newChildren[newStartIndex],
         replayer.mirror,
         rrnodeMirror,
       );
-      parentNode.insertBefore(newNode, referenceNode);
-      diff(newNode, newChildren[newStartIndex], replayer, rrnodeMirror);
+      try {
+        oldTree.insertBefore(newNode, referenceNode);
+      } catch (e) {
+        console.warn(e);
+      }
     }
   } else if (newStartIndex > newEndIndex) {
     for (; oldStartIndex <= oldEndIndex; oldStartIndex++) {
       const node = oldChildren[oldStartIndex];
-      if (node) {
-        parentNode.removeChild(node);
+      if (!node || node.parentNode !== oldTree) continue;
+      try {
+        oldTree.removeChild(node);
         replayer.mirror.removeNodeFromMap(node);
+      } catch (e) {
+        console.warn(e);
       }
     }
+  }
+
+  // Recursively diff the children of the old tree and the new tree with their props and deeper structures.
+  let oldChild = oldTree.firstChild;
+  let newChild = newTree.firstChild;
+  while (oldChild !== null && newChild !== null) {
+    diff(oldChild, newChild, replayer, rrnodeMirror);
+    oldChild = oldChild.nextSibling;
+    newChild = newChild.nextSibling;
   }
 }
 
@@ -365,9 +536,12 @@ export function createOrGetNode(
   domMirror: NodeMirror,
   rrnodeMirror: Mirror,
 ): Node {
-  let node = domMirror.getNode(rrnodeMirror.getId(rrNode));
+  const nodeId = rrnodeMirror.getId(rrNode);
   const sn = rrnodeMirror.getMeta(rrNode);
-  if (node !== null) return node;
+  let node: Node | null = null;
+  // negative ids shouldn't be compared accross mirrors
+  if (nodeId > -1) node = domMirror.getNode(nodeId);
+  if (node !== null && sameNodeType(node, rrNode)) return node;
   switch (rrNode.RRNodeType) {
     case RRNodeType.Document:
       node = new Document();
@@ -383,10 +557,7 @@ export function createOrGetNode(
       let tagName = (rrNode as IRRElement).tagName.toLowerCase();
       tagName = SVGTagMap[tagName] || tagName;
       if (sn && 'isSVG' in sn && sn?.isSVG) {
-        node = document.createElementNS(
-          NAMESPACES['svg'],
-          (rrNode as IRRElement).tagName.toLowerCase(),
-        );
+        node = document.createElementNS(NAMESPACES['svg'], tagName);
       } else node = document.createElement((rrNode as IRRElement).tagName);
       break;
     }
@@ -402,112 +573,41 @@ export function createOrGetNode(
   }
 
   if (sn) domMirror.add(node, { ...sn });
+  try {
+    createdNodeSet?.add(node);
+  } catch (e) {
+    // Just for safety concern.
+  }
   return node;
 }
 
-export function getNestedRule(
-  rules: CSSRuleList,
-  position: number[],
-): CSSGroupingRule {
-  const rule = rules[position[0]] as CSSGroupingRule;
-  if (position.length === 1) {
-    return rule;
-  } else {
-    return getNestedRule(
-      (rule.cssRules[position[1]] as CSSGroupingRule).cssRules,
-      position.slice(2),
-    );
-  }
+/**
+ * To check whether two nodes are the same type of node. If they are both Elements, check wether their tagNames are same or not.
+ */
+export function sameNodeType(node1: Node, node2: IRRNode) {
+  if (node1.nodeType !== node2.nodeType) return false;
+  return (
+    node1.nodeType !== node1.ELEMENT_NODE ||
+    (node1 as HTMLElement).tagName.toUpperCase() ===
+      (node2 as IRRElement).tagName
+  );
 }
 
-export enum StyleRuleType {
-  Insert,
-  Remove,
-  Snapshot,
-  SetProperty,
-  RemoveProperty,
-}
-type InsertRule = {
-  cssText: string;
-  type: StyleRuleType.Insert;
-  index?: number | number[];
-};
-type RemoveRule = {
-  type: StyleRuleType.Remove;
-  index: number | number[];
-};
-type SetPropertyRule = {
-  type: StyleRuleType.SetProperty;
-  index: number[];
-  property: string;
-  value: string | null;
-  priority: string | undefined;
-};
-type RemovePropertyRule = {
-  type: StyleRuleType.RemoveProperty;
-  index: number[];
-  property: string;
-};
-
-export type VirtualStyleRules = Array<
-  InsertRule | RemoveRule | SetPropertyRule | RemovePropertyRule
->;
-
-export function getPositionsAndIndex(nestedIndex: number[]) {
-  const positions = [...nestedIndex];
-  const index = positions.pop();
-  return { positions, index };
-}
-
-export function applyVirtualStyleRulesToNode(
-  styleNode: HTMLStyleElement,
-  virtualStyleRules: VirtualStyleRules,
-) {
-  const sheet = styleNode.sheet!;
-
-  virtualStyleRules.forEach((rule) => {
-    if (rule.type === StyleRuleType.Insert) {
-      try {
-        if (Array.isArray(rule.index)) {
-          const { positions, index } = getPositionsAndIndex(rule.index);
-          const nestedRule = getNestedRule(sheet.cssRules, positions);
-          nestedRule.insertRule(rule.cssText, index);
-        } else {
-          sheet.insertRule(rule.cssText, rule.index);
-        }
-      } catch (e) {
-        /**
-         * sometimes we may capture rules with browser prefix
-         * insert rule with prefixs in other browsers may cause Error
-         */
-      }
-    } else if (rule.type === StyleRuleType.Remove) {
-      try {
-        if (Array.isArray(rule.index)) {
-          const { positions, index } = getPositionsAndIndex(rule.index);
-          const nestedRule = getNestedRule(sheet.cssRules, positions);
-          nestedRule.deleteRule(index || 0);
-        } else {
-          sheet.deleteRule(rule.index);
-        }
-      } catch (e) {
-        /**
-         * accessing styleSheet rules may cause SecurityError
-         * for specific access control settings
-         */
-      }
-    } else if (rule.type === StyleRuleType.SetProperty) {
-      const nativeRule = (getNestedRule(
-        sheet.cssRules,
-        rule.index,
-      ) as unknown) as CSSStyleRule;
-      nativeRule.style.setProperty(rule.property, rule.value, rule.priority);
-    } else if (rule.type === StyleRuleType.RemoveProperty) {
-      const nativeRule = (getNestedRule(
-        sheet.cssRules,
-        rule.index,
-      ) as unknown) as CSSStyleRule;
-      nativeRule.style.removeProperty(rule.property);
-    }
-  });
+/**
+ * To check whether two nodes are matching. If so, they are supposed to have the same serialized Id and node type. If they are both Elements, their tagNames should be the same as well. Otherwise, they are not matching.
+ */
+export function nodeMatching(
+  node1: Node,
+  node2: IRRNode,
+  domMirror: NodeMirror,
+  rrdomMirror: Mirror,
+): boolean {
+  const node1Id = domMirror.getId(node1);
+  const node2Id = rrdomMirror.getId(node2);
+  // rrdom contains elements with negative ids, we don't want to accidentally match those to a mirror mismatch (-1) id.
+  // Negative oldStartId happen when nodes are not in the mirror, but are in the DOM.
+  // eg.iframes come with a document, html, head and body nodes.
+  // thats why below we always check if an id is negative.
+  if (node1Id === -1 || node1Id !== node2Id) return false;
+  return sameNodeType(node1, node2);
 }

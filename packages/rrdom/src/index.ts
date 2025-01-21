@@ -1,42 +1,41 @@
-import {
-  NodeType as RRNodeType,
-  createMirror as createNodeMirror,
-} from 'rrweb-snapshot';
+import { createMirror as createNodeMirror } from 'rrweb-snapshot';
+import type { Mirror as NodeMirror } from 'rrweb-snapshot';
+import { NodeType as RRNodeType } from '@rrweb/types';
 import type {
-  Mirror as NodeMirror,
   IMirror,
   serializedNodeWithId,
-} from 'rrweb-snapshot';
-import type {
   canvasMutationData,
   canvasEventWithTime,
   inputData,
   scrollData,
-} from 'rrweb/src/types';
-import type { VirtualStyleRules } from './diff';
+  styleSheetRuleData,
+  styleDeclarationData,
+} from '@rrweb/types';
 import {
   BaseRRNode as RRNode,
-  BaseRRCDATASectionImpl,
-  BaseRRCommentImpl,
-  BaseRRDocumentImpl,
-  BaseRRDocumentTypeImpl,
-  BaseRRElementImpl,
-  BaseRRMediaElementImpl,
-  BaseRRTextImpl,
-  IRRDocument,
-  IRRElement,
-  IRRNode,
+  BaseRRCDATASection,
+  BaseRRComment,
+  BaseRRDocument,
+  BaseRRDocumentType,
+  BaseRRElement,
+  BaseRRMediaElement,
+  BaseRRText,
+  type IRRDocument,
+  type IRRElement,
+  type IRRNode,
   NodeType,
-  IRRDocumentType,
-  IRRText,
-  IRRComment,
+  type IRRDocumentType,
+  type IRRText,
+  type IRRComment,
+  BaseRRDialogElement,
 } from './document';
 
-export class RRDocument extends BaseRRDocumentImpl(RRNode) {
+export class RRDocument extends BaseRRDocument {
+  private UNSERIALIZED_STARTING_ID = -2;
   // In the rrweb replayer, there are some unserialized nodes like the element that stores the injected style rules.
   // These unserialized nodes may interfere the execution of the diff algorithm.
-  // The id of serialized node is larger than 0. So this value ​​less than 0 is used as id for these unserialized nodes.
-  private _unserializedId = -1;
+  // The id of serialized node is larger than 0. So this value less than 0 is used as id for these unserialized nodes.
+  private _unserializedId = this.UNSERIALIZED_STARTING_ID;
 
   /**
    * Every time the id is used, it will minus 1 automatically to avoid collisions.
@@ -57,8 +56,11 @@ export class RRDocument extends BaseRRDocumentImpl(RRNode) {
   }
 
   createDocument(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _namespace: string | null,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _qualifiedName: string | null,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _doctype?: DocumentType | null,
   ) {
     return new RRDocument();
@@ -99,6 +101,9 @@ export class RRDocument extends BaseRRDocumentImpl(RRNode) {
       case 'STYLE':
         element = new RRStyleElement(upperTagName);
         break;
+      case 'DIALOG':
+        element = new RRDialogElement(upperTagName);
+        break;
       default:
         element = new RRElement(upperTagName);
         break;
@@ -126,26 +131,30 @@ export class RRDocument extends BaseRRDocumentImpl(RRNode) {
   }
 
   destroyTree() {
-    this.childNodes = [];
+    this.firstChild = null;
+    this.lastChild = null;
     this.mirror.reset();
   }
 
   open() {
     super.open();
-    this._unserializedId = -1;
+    this._unserializedId = this.UNSERIALIZED_STARTING_ID;
   }
 }
 
-export const RRDocumentType = BaseRRDocumentTypeImpl(RRNode);
+export const RRDocumentType = BaseRRDocumentType;
 
-export class RRElement extends BaseRRElementImpl(RRNode) {
+export class RRElement extends BaseRRElement {
   inputData: inputData | null = null;
   scrollData: scrollData | null = null;
 }
 
-export class RRMediaElement extends BaseRRMediaElementImpl(RRElement) {}
+export class RRMediaElement extends BaseRRMediaElement {}
+
+export class RRDialogElement extends BaseRRDialogElement {}
 
 export class RRCanvasElement extends RRElement implements IRRElement {
+  public rr_dataURL: string | null = null;
   public canvasMutations: {
     event: canvasEventWithTime;
     mutation: canvasMutationData;
@@ -159,7 +168,7 @@ export class RRCanvasElement extends RRElement implements IRRElement {
 }
 
 export class RRStyleElement extends RRElement {
-  public rules: VirtualStyleRules = [];
+  public rules: (styleSheetRuleData | styleDeclarationData)[] = [];
 }
 
 export class RRIFrameElement extends RRElement {
@@ -170,13 +179,13 @@ export class RRIFrameElement extends RRElement {
   }
 }
 
-export const RRText = BaseRRTextImpl(RRNode);
+export const RRText = BaseRRText;
 export type RRText = typeof RRText;
 
-export const RRComment = BaseRRCommentImpl(RRNode);
+export const RRComment = BaseRRComment;
 export type RRComment = typeof RRComment;
 
-export const RRCDATASection = BaseRRCDATASectionImpl(RRNode);
+export const RRCDATASection = BaseRRCDATASection;
 export type RRCDATASection = typeof RRCDATASection;
 
 interface RRElementTagNameMap {
@@ -187,9 +196,8 @@ interface RRElementTagNameMap {
   video: RRMediaElement;
 }
 
-type RRElementType<
-  K extends keyof HTMLElementTagNameMap
-> = K extends keyof RRElementTagNameMap ? RRElementTagNameMap[K] : RRElement;
+type RRElementType<K extends keyof HTMLElementTagNameMap> =
+  K extends keyof RRElementTagNameMap ? RRElementTagNameMap[K] : RRElement;
 
 function getValidTagName(element: HTMLElement): string {
   // https://github.com/rrweb-io/rrweb-snapshot/issues/56
@@ -201,9 +209,9 @@ function getValidTagName(element: HTMLElement): string {
 
 /**
  * Build a RRNode from a real Node.
- * @param node the real Node
- * @param rrdom the RRDocument
- * @param domMirror the NodeMirror that records the real document tree
+ * @param node - the real Node
+ * @param rrdom - the RRDocument
+ * @param domMirror - the NodeMirror that records the real document tree
  * @returns the built RRNode
  */
 export function buildFromNode(
@@ -225,7 +233,7 @@ export function buildFromNode(
           | 'CSS1Compat';
       }
       break;
-    case NodeType.DOCUMENT_TYPE_NODE:
+    case NodeType.DOCUMENT_TYPE_NODE: {
       const documentType = node as DocumentType;
       rrNode = rrdom.createDocumentType(
         documentType.name,
@@ -233,7 +241,8 @@ export function buildFromNode(
         documentType.systemId,
       );
       break;
-    case NodeType.ELEMENT_NODE:
+    }
+    case NodeType.ELEMENT_NODE: {
       const elementNode = node as HTMLElement;
       const tagName = getValidTagName(elementNode);
       rrNode = rrdom.createElement(tagName);
@@ -248,6 +257,7 @@ export function buildFromNode(
        * Because if these values are changed later, the mutation will be applied through the batched input events on its RRElement after the diff algorithm is executed.
        */
       break;
+    }
     case NodeType.TEXT_NODE:
       rrNode = rrdom.createTextNode((node as Text).textContent || '');
       break;
@@ -280,9 +290,9 @@ export function buildFromNode(
 
 /**
  * Build a RRDocument from a real document tree.
- * @param dom the real document tree
- * @param domMirror the NodeMirror that records the real document tree
- * @param rrdom the rrdom object to be constructed
+ * @param dom - the real document tree
+ * @param domMirror - the NodeMirror that records the real document tree
+ * @param rrdom - the rrdom object to be constructed
  * @returns the build rrdom
  */
 export function buildFromDom(
@@ -305,7 +315,8 @@ export function buildFromDom(
     }
 
     if (node.nodeName === 'IFRAME') {
-      walk((node as HTMLIFrameElement).contentDocument!, rrNode);
+      const iframeDoc = (node as HTMLIFrameElement).contentDocument;
+      iframeDoc && walk(iframeDoc, rrNode);
     } else if (
       node.nodeType === NodeType.DOCUMENT_NODE ||
       node.nodeType === NodeType.ELEMENT_NODE ||
@@ -316,6 +327,7 @@ export function buildFromDom(
         node.nodeType === NodeType.ELEMENT_NODE &&
         (node as HTMLElement).shadowRoot
       )
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         walk((node as HTMLElement).shadowRoot!, rrNode);
       node.childNodes.forEach((childNode) => walk(childNode, rrNode));
     }
@@ -379,6 +391,11 @@ export class Mirror implements IMirror<RRNode> {
   }
 
   replace(id: number, n: RRNode) {
+    const oldNode = this.getNode(id);
+    if (oldNode) {
+      const meta = this.nodeMetaMap.get(oldNode);
+      if (meta) this.nodeMetaMap.set(n, meta);
+    }
     this.idNodeMap.set(id, n);
   }
 
@@ -390,7 +407,7 @@ export class Mirror implements IMirror<RRNode> {
 
 /**
  * Get a default serializedNodeWithId value for a RRNode.
- * @param id the serialized id to assign
+ * @param id - the serialized id to assign
  */
 export function getDefaultSN(node: IRRNode, id: number): serializedNodeWithId {
   switch (node.RRNodeType) {
@@ -400,7 +417,7 @@ export function getDefaultSN(node: IRRNode, id: number): serializedNodeWithId {
         type: node.RRNodeType,
         childNodes: [],
       };
-    case RRNodeType.DocumentType:
+    case RRNodeType.DocumentType: {
       const doctype = node as IRRDocumentType;
       return {
         id,
@@ -409,6 +426,7 @@ export function getDefaultSN(node: IRRNode, id: number): serializedNodeWithId {
         publicId: doctype.publicId,
         systemId: doctype.systemId,
       };
+    }
     case RRNodeType.Element:
       return {
         id,
@@ -438,13 +456,34 @@ export function getDefaultSN(node: IRRNode, id: number): serializedNodeWithId {
   }
 }
 
+/**
+ * Print the RRDom as a string.
+ * @param rootNode - the root node of the RRDom tree
+ * @param mirror - a rrweb or rrdom Mirror
+ * @returns printed string
+ */
+export function printRRDom(rootNode: IRRNode, mirror: IMirror<IRRNode>) {
+  return walk(rootNode, mirror, '');
+}
+function walk(node: IRRNode, mirror: IMirror<IRRNode>, blankSpace: string) {
+  let printText = `${blankSpace}${mirror.getId(node)} ${node.toString()}\n`;
+  if (node.RRNodeType === RRNodeType.Element) {
+    const element = node as IRRElement;
+    if (element.shadowRoot)
+      printText += walk(element.shadowRoot, mirror, blankSpace + '  ');
+  }
+  for (const child of node.childNodes)
+    printText += walk(child, mirror, blankSpace + '  ');
+  if (node.nodeName === 'IFRAME')
+    printText += walk(
+      (node as RRIFrameElement).contentDocument,
+      mirror,
+      blankSpace + '  ',
+    );
+  return printText;
+}
+
 export { RRNode };
 
-export {
-  diff,
-  createOrGetNode,
-  StyleRuleType,
-  ReplayerHandler,
-  VirtualStyleRules,
-} from './diff';
+export { diff, createOrGetNode, type ReplayerHandler } from './diff';
 export * from './document';

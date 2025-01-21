@@ -7,14 +7,19 @@
 可以通过如下代码使用默认的配置选项
 
 ```js
-rrweb.record({
-  emit: emit(event) {
+import rrweb from 'rrweb';
+import { getRecordConsolePlugin } from '@rrweb/rrweb-plugin-console-record';
+
+rweb.record({
+  emit: function emit(event) {
     // 如果要使用console来输出信息，请使用如下的写法
-    const defaultLog = console.log["__rrweb_original__"] ? console.log["__rrweb_original__"] : console.log;
+    const defaultLog = console.log['__rrweb_original__']
+      ? console.log['__rrweb_original__']
+      : console.log;
     defaultLog(event);
   },
   // 使用默认的配置选项
-  plugins: [rrweb.getRecordConsolePlugin()],
+  plugins: [getRecordConsolePlugin()],
 });
 ```
 
@@ -24,23 +29,30 @@ rrweb.record({
 你也可以定制录制 console 的选项
 
 ```js
+import rrweb from 'rrweb';
+import { getRecordConsolePlugin } from '@rrweb/rrweb-plugin-console-record';
+
 rrweb.record({
-  emit: emit(event) {
+  emit: function emit(event) {
     // 如果要使用console来输出信息，请使用如下的写法
-    const defaultLog = console.log["__rrweb_original__"] ? console.log["__rrweb_original__"] : console.log;
+    const defaultLog = console.log['__rrweb_original__']
+      ? console.log['__rrweb_original__']
+      : console.log;
     defaultLog(event);
   },
   // 定制的选项
-  plugins: [rrweb.getRecordConsolePlugin({
-    level: ["info", "log", "warn", "error"],
-    lengthThreshold: 10000,
-    stringifyOptions: {
-      stringLengthLimit: 1000,
-      numOfKeysLimit: 100,
-      depthOfLimit: 1
-    },
-    logger: window.console,
-  })],
+  plugins: [
+    getRecordConsolePlugin({
+      level: ['info', 'log', 'warn', 'error'],
+      lengthThreshold: 10000,
+      stringifyOptions: {
+        stringLengthLimit: 1000,
+        numOfKeysLimit: 100,
+        depthOfLimit: 1,
+      },
+      logger: window.console,
+    }),
+  ],
 });
 ```
 
@@ -57,9 +69,12 @@ rrweb.record({
 如果 replayer 传入的 events 中包含了 console 类型的数据，我们将自动播放这些数据。
 
 ```js
+import rrweb from 'rrweb';
+import { getReplayConsolePlugin } from '@rrweb/rrweb-plugin-console-replay';
+
 const replayer = new rrweb.Replayer(events, {
   plugins: [
-    rrweb.getReplayConsolePlugin({
+    getReplayConsolePlugin({
       level: ['info', 'log', 'warn', 'error'],
     }),
   ],

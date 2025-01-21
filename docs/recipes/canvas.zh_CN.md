@@ -21,6 +21,11 @@ rrweb.record({
   sampling: {
     canvas: 15,
   },
+  // 图像的格式
+  dataURLOptions: {
+    type: 'image/webp',
+    quality: 0.6,
+  },
 });
 ```
 
@@ -34,3 +39,6 @@ replayer.play();
 ```
 
 **回放 Canvas 将会关闭沙盒策略，导致一定风险**。
+
+另外，您可以使用 [rrweb-plugin-canvas-webrtc-record](../../packages/plugins/rrweb-plugin-canvas-webrtc-record/) 和 [rrweb-plugin-canvas-webrtc-replay](../../packages/plugins/rrweb-plugin-canvas-webrtc-replay) 插件通过 WebRTC 流式传输 Canvas 元素。
+有关更多信息，请参考 [canvas-webrtc 文档](../../packages/plugins/rrweb-plugin-canvas-webrtc-record/Readme.md)。

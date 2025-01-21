@@ -8,14 +8,19 @@ This feature aims to provide developers with more information about the bug scen
 You can enable the logger using default option like this:
 
 ```js
+import rrweb from 'rrweb';
+import { getRecordConsolePlugin } from '@rrweb/rrweb-plugin-console-record';
+
 rrweb.record({
-  emit: emit(event) {
+  emit: function emit(event) {
     // you should use console.log in this way to avoid errors.
-    const defaultLog = console.log["__rrweb_original__"] ? console.log["__rrweb_original__"] : console.log;
+    const defaultLog = console.log['__rrweb_original__']
+      ? console.log['__rrweb_original__']
+      : console.log;
     defaultLog(event);
   },
   // to use default record option
-  plugins: [rrweb.getRecordConsolePlugin()],
+  plugins: [getRecordConsolePlugin()],
 });
 ```
 
@@ -25,23 +30,30 @@ You should call console.log.\_\_rrweb_original\_\_() instead.
 You can also customize the behavior of logger like this:
 
 ```js
+import rrweb from 'rrweb';
+import { getRecordConsolePlugin } from '@rrweb/rrweb-plugin-console-record';
+
 rrweb.record({
-  emit: emit(event) {
+  emit: function emit(event) {
     // you should use console.log in this way to avoid errors.
-    const defaultLog = console.log["__rrweb_original__"] ? console.log["__rrweb_original__"] : console.log;
+    const defaultLog = console.log['__rrweb_original__']
+      ? console.log['__rrweb_original__']
+      : console.log;
     defaultLog(event);
   },
   // customized options
-  plugins: [rrweb.getRecordConsolePlugin({
-    level: ["info", "log", "warn", "error"],
-    lengthThreshold: 10000,
-    stringifyOptions: {
-      stringLengthLimit: 1000,
-      numOfKeysLimit: 100,
-      depthOfLimit: 1
-    },
-    logger: window.console,
-  })],
+  plugins: [
+    getRecordConsolePlugin({
+      level: ['info', 'log', 'warn', 'error'],
+      lengthThreshold: 10000,
+      stringifyOptions: {
+        stringLengthLimit: 1000,
+        numOfKeysLimit: 100,
+        depthOfLimit: 1,
+      },
+      logger: window.console,
+    }),
+  ],
 });
 ```
 
@@ -58,9 +70,12 @@ All options are described below:
 If recorded events include data of console log type, we will automatically play them.
 
 ```js
+import rrweb from 'rrweb';
+import { getReplayConsolePlugin } from '@rrweb/rrweb-plugin-console-replay';
+
 const replayer = new rrweb.Replayer(events, {
   plugins: [
-    rrweb.getReplayConsolePlugin({
+    getReplayConsolePlugin({
       level: ['info', 'log', 'warn', 'error'],
     }),
   ],

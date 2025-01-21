@@ -1,4 +1,5 @@
-import { RRDocument, RRNode } from './document-nodejs';
+import { BaseRRNode } from 'rrdom';
+import { RRDocument } from './document-nodejs';
 
 /**
  * Polyfill the performance for nodejs.
@@ -7,8 +8,9 @@ import { RRDocument, RRNode } from './document-nodejs';
  */
 export function polyfillPerformance() {
   if (typeof window !== 'undefined' || 'performance' in global) return;
-  ((global as Window & typeof globalThis)
-    .performance as unknown) = require('perf_hooks').performance;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
+  const performance = require('perf_hooks').performance;
+  ((global as Window & typeof globalThis).performance as unknown) = performance;
 }
 
 /**
@@ -22,11 +24,11 @@ export function polyfillRAF() {
     INTERVAL = 1_000 / FPS;
   let timeoutHandle: NodeJS.Timeout | null = null,
     rafCount = 0,
-    requests = Object.create(null);
+    requests = Object.create(null) as Record<string, (time: number) => void>;
 
   function onFrameTimer() {
     const currentRequests = requests;
-    requests = Object.create(null);
+    requests = Object.create(null) as Record<string, (time: number) => void>;
     timeoutHandle = null;
     Object.keys(currentRequests).forEach(function (id) {
       const request = currentRequests[id];
@@ -50,10 +52,10 @@ export function polyfillRAF() {
     }
   }
 
-  (global as Window &
-    typeof globalThis).requestAnimationFrame = requestAnimationFrame;
-  (global as Window &
-    typeof globalThis).cancelAnimationFrame = cancelAnimationFrame;
+  (global as Window & typeof globalThis).requestAnimationFrame =
+    requestAnimationFrame;
+  (global as Window & typeof globalThis).cancelAnimationFrame =
+    cancelAnimationFrame;
 }
 
 /**
@@ -63,15 +65,17 @@ export function polyfillRAF() {
  */
 export function polyfillEvent() {
   if (typeof Event !== 'undefined') return;
-  (global.Event as unknown) = function () {};
+  (global.Event as unknown) = function () {
+    //
+  };
 }
 
 /**
- * Polyfill Node type with RRNode for nodejs.
+ * Polyfill Node type with BaseRRNode for nodejs.
  */
 export function polyfillNode() {
   if (typeof Node !== 'undefined') return;
-  (global.Node as unknown) = RRNode;
+  (global.Node as unknown) = BaseRRNode;
 }
 
 /**
@@ -82,8 +86,8 @@ export function polyfillDocument() {
   const rrdom = new RRDocument();
   (() => {
     rrdom.appendChild(rrdom.createElement('html'));
-    rrdom.documentElement!.appendChild(rrdom.createElement('head'));
-    rrdom.documentElement!.appendChild(rrdom.createElement('body'));
+    rrdom.documentElement?.appendChild(rrdom.createElement('head'));
+    rrdom.documentElement?.appendChild(rrdom.createElement('body'));
   })();
-  global.document = (rrdom as unknown) as Document;
+  global.document = rrdom as unknown as Document;
 }

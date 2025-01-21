@@ -1,15 +1,17 @@
 {
+  "extends": "../../tsconfig.base.json",
+  "include": ["src"],
+  "exclude": ["vite.config.ts", "vitest.config.ts", "test"],
   "compilerOptions": {
-    "module": "ESNext",
-    "moduleResolution": "Node",
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "removeComments": true,
-    "preserveConstEnums": true,
     "rootDir": "src",
-    "outDir": "build",
-    "lib": ["es6", "dom"]
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo"
   },
-  "exclude": ["test"],
-  "include": ["src"]
+  "references": [
+    {
+      "path": "../types"
+    },
+    {
+      "path": "../utils"
+    }
+  ]
 }

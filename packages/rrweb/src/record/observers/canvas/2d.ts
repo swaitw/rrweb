@@ -1,11 +1,10 @@
-import type { Mirror } from 'rrweb-snapshot';
 import {
-  blockClass,
+  type blockClass,
   CanvasContext,
-  canvasManagerMutationCallback,
-  IWindow,
-  listenerHandler,
-} from '../../../types';
+  type canvasManagerMutationCallback,
+  type IWindow,
+  type listenerHandler,
+} from '@rrweb/types';
 import { hookSetter, isBlocked, patch } from '../../../utils';
 import { serializeArgs } from './serialize-args';
 
@@ -13,7 +12,7 @@ export default function initCanvas2DMutationObserver(
   cb: canvasManagerMutationCallback,
   win: IWindow,
   blockClass: blockClass,
-  mirror: Mirror,
+  blockSelector: string | null,
 ): listenerHandler {
   const handlers: listenerHandler[] = [];
   const props2D = Object.getOwnPropertyNames(
@@ -31,16 +30,21 @@ export default function initCanvas2DMutationObserver(
       const restoreHandler = patch(
         win.CanvasRenderingContext2D.prototype,
         prop,
-        function (original) {
+        function (
+          original: (
+            this: CanvasRenderingContext2D,
+            ...args: unknown[]
+          ) => void,
+        ) {
           return function (
             this: CanvasRenderingContext2D,
             ...args: Array<unknown>
           ) {
-            if (!isBlocked(this.canvas, blockClass, true)) {
+            if (!isBlocked(this.canvas, blockClass, blockSelector, true)) {
               // Using setTimeout as toDataURL can be heavy
               // and we'd rather not block the main thread
               setTimeout(() => {
-                const recordArgs = serializeArgs([...args], win, this);
+                const recordArgs = serializeArgs(args, win, this);
                 cb(this.canvas, {
                   type: CanvasContext['2D'],
                   property: prop,
@@ -59,6 +63,7 @@ export default function initCanvas2DMutationObserver(
         prop,
         {
           set(v) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
             cb(this.canvas, {
               type: CanvasContext['2D'],
               property: prop,

@@ -1,12 +1,14 @@
-import { parse } from './css';
+import { mediaSelectorPlugin, pseudoClassPlugin } from './css';
 import {
-  serializedNodeWithId,
+  type serializedNodeWithId,
+  type serializedElementNodeWithId,
   NodeType,
-  tagMap,
-  elementNode,
-  BuildCache,
-} from './types';
-import { isElement, Mirror } from './utils';
+  type elementNode,
+  type legacyAttributes,
+} from '@rrweb/types';
+import { type tagMap, type BuildCache } from './types';
+import { isElement, Mirror, isNodeMetaEqual } from './utils';
+import postcss from 'postcss';
 
 const tagMap: tagMap = {
   script: 'noscript',
@@ -56,55 +58,15 @@ function getTagName(n: elementNode): string {
   return tagName;
 }
 
-// based on https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_Expressions#escaping
-function escapeRegExp(str: string) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
-}
-
-const HOVER_SELECTOR = /([^\\]):hover/;
-const HOVER_SELECTOR_GLOBAL = new RegExp(HOVER_SELECTOR.source, 'g');
-export function addHoverClass(cssText: string, cache: BuildCache): string {
+export function adaptCssForReplay(cssText: string, cache: BuildCache): string {
   const cachedStyle = cache?.stylesWithHoverClass.get(cssText);
   if (cachedStyle) return cachedStyle;
 
-  const ast = parse(cssText, {
-    silent: true,
-  });
-
-  if (!ast.stylesheet) {
-    return cssText;
-  }
-
-  const selectors: string[] = [];
-  ast.stylesheet.rules.forEach((rule) => {
-    if ('selectors' in rule) {
-      (rule.selectors || []).forEach((selector: string) => {
-        if (HOVER_SELECTOR.test(selector)) {
-          selectors.push(selector);
-        }
-      });
-    }
-  });
-
-  if (selectors.length === 0) {
-    return cssText;
-  }
-
-  const selectorMatcher = new RegExp(
-    selectors
-      .filter((selector, index) => selectors.indexOf(selector) === index)
-      .sort((a, b) => b.length - a.length)
-      .map((selector) => {
-        return escapeRegExp(selector);
-      })
-      .join('|'),
-    'g',
-  );
-
-  const result = cssText.replace(selectorMatcher, (selector) => {
-    const newSelector = selector.replace(HOVER_SELECTOR_GLOBAL, '$1.\\:hover');
-    return `${selector}, ${newSelector}`;
-  });
+  const ast: { css: string } = postcss([
+    mediaSelectorPlugin,
+    pseudoClassPlugin,
+  ]).process(cssText);
+  const result = ast.css;
   cache?.stylesWithHoverClass.set(cssText, result);
   return result;
 }
@@ -114,6 +76,77 @@ export function createCache(): BuildCache {
   return {
     stylesWithHoverClass,
   };
+}
+
+/**
+ * undo splitCssText/markCssSplits
+ * (would move to utils.ts but uses `adaptCssForReplay`)
+ */
+export function applyCssSplits(
+  n: serializedElementNodeWithId,
+  cssText: string,
+  hackCss: boolean,
+  cache: BuildCache,
+): void {
+  const childTextNodes = [];
+  for (const scn of n.childNodes) {
+    if (scn.type === NodeType.Text) {
+      childTextNodes.push(scn);
+    }
+  }
+  const cssTextSplits = cssText.split('/* rr_split */');
+  while (
+    cssTextSplits.length > 1 &&
+    cssTextSplits.length > childTextNodes.length
+  ) {
+    // unexpected: remerge the last two so that we don't discard any css
+    cssTextSplits.splice(-2, 2, cssTextSplits.slice(-2).join(''));
+  }
+  for (let i = 0; i < childTextNodes.length; i++) {
+    const childTextNode = childTextNodes[i];
+    const cssTextSection = cssTextSplits[i];
+    if (childTextNode && cssTextSection) {
+      // id will be assigned when these child nodes are
+      // iterated over in buildNodeWithSN
+      childTextNode.textContent = hackCss
+        ? adaptCssForReplay(cssTextSection, cache)
+        : cssTextSection;
+    }
+  }
+}
+
+/**
+ * Normally a <style> element has a single textNode containing the rules.
+ * During serialization, we bypass this (`styleEl.sheet`) to get the rules the
+ * browser sees and serialize this to a special _cssText attribute, blanking
+ * out any text nodes. This function reverses that and also handles cases where
+ * there were no textNode children present (dynamic css/or a <link> element) as
+ * well as multiple textNodes, which need to be repopulated (based on presence of
+ * a special `rr_split` marker in case they are modified by subsequent mutations.
+ */
+export function buildStyleNode(
+  n: serializedElementNodeWithId,
+  styleEl: HTMLStyleElement, // when inlined, a <link type="stylesheet"> also gets rebuilt as a <style>
+  cssText: string,
+  options: {
+    doc: Document;
+    hackCss: boolean;
+    cache: BuildCache;
+  },
+) {
+  const { doc, hackCss, cache } = options;
+  if (n.childNodes.length) {
+    applyCssSplits(n, cssText, hackCss, cache);
+  } else {
+    if (hackCss) {
+      cssText = adaptCssForReplay(cssText, cache);
+    }
+    /**
+       <link> element or dynamic <style> are serialized without any child nodes
+       we create the text node without an ID or presence in mirror as it can't
+    */
+    styleEl.appendChild(doc.createTextNode(cssText));
+  }
 }
 
 function buildNode(
@@ -134,139 +167,201 @@ function buildNode(
         n.publicId,
         n.systemId,
       );
-    case NodeType.Element:
+    case NodeType.Element: {
       const tagName = getTagName(n);
       let node: Element;
       if (n.isSVG) {
         node = doc.createElementNS('http://www.w3.org/2000/svg', tagName);
       } else {
+        if (
+          // If the tag name is a custom element name
+          n.isCustom &&
+          // If the browser supports custom elements
+          doc.defaultView?.customElements &&
+          // If the custom element hasn't been defined yet
+          !doc.defaultView.customElements.get(n.tagName)
+        )
+          doc.defaultView.customElements.define(
+            n.tagName,
+            class extends doc.defaultView.HTMLElement {},
+          );
         node = doc.createElement(tagName);
       }
+      /**
+       * Attribute names start with `rr_` are internal attributes added by rrweb.
+       * They often overwrite other attributes on the element.
+       * We need to parse them last so they can overwrite conflicting attributes.
+       */
+      const specialAttributes: { [key: string]: string | number } = {};
       for (const name in n.attributes) {
-        if (!n.attributes.hasOwnProperty(name)) {
+        if (!Object.prototype.hasOwnProperty.call(n.attributes, name)) {
           continue;
         }
         let value = n.attributes[name];
-        if (tagName === 'option' && name === 'selected' && value === false) {
+        if (
+          tagName === 'option' &&
+          name === 'selected' &&
+          (value as legacyAttributes[typeof name]) === false
+        ) {
           // legacy fix (TODO: if `value === false` can be generated for other attrs,
           // should we also omit those other attrs from build ?)
           continue;
         }
-        value =
-          typeof value === 'boolean' || typeof value === 'number' ? '' : value;
-        // attribute names start with rr_ are internal attributes added by rrweb
-        if (!name.startsWith('rr_')) {
-          const isTextarea = tagName === 'textarea' && name === 'value';
-          const isRemoteOrDynamicCss =
-            tagName === 'style' && name === '_cssText';
-          if (isRemoteOrDynamicCss && hackCss) {
-            value = addHoverClass(value, cache);
-          }
-          if (isTextarea || isRemoteOrDynamicCss) {
-            const child = doc.createTextNode(value);
-            // https://github.com/rrweb-io/rrweb/issues/112
-            for (const c of Array.from(node.childNodes)) {
-              if (c.nodeType === node.TEXT_NODE) {
-                node.removeChild(c);
-              }
-            }
-            node.appendChild(child);
+
+        // null values mean the attribute was removed
+        if (value === null) {
+          continue;
+        }
+
+        /**
+         * Boolean attributes are considered to be true if they're present on the element at all.
+         * We should set value to the empty string ("") or the attribute's name, with no leading or trailing whitespace.
+         * @see https://developer.mozilla.org/en-US/docs/Web/API/Element/setAttribute#parameters
+         */
+        if (value === true) value = '';
+
+        if (name.startsWith('rr_')) {
+          specialAttributes[name] = value;
+          continue;
+        }
+
+        if (typeof value !== 'string') {
+          // pass
+        } else if (tagName === 'style' && name === '_cssText') {
+          buildStyleNode(n, node as HTMLStyleElement, value, options);
+          continue; // no need to set _cssText as attribute
+        } else if (tagName === 'textarea' && name === 'value') {
+          // create without an ID or presence in mirror
+          node.appendChild(doc.createTextNode(value));
+          n.childNodes = []; // value overrides childNodes
+          continue;
+        }
+
+        try {
+          if (n.isSVG && name === 'xlink:href') {
+            node.setAttributeNS(
+              'http://www.w3.org/1999/xlink',
+              name,
+              value.toString(),
+            );
+          } else if (
+            name === 'onload' ||
+            name === 'onclick' ||
+            name.substring(0, 7) === 'onmouse'
+          ) {
+            // Rename some of the more common atttributes from https://www.w3schools.com/tags/ref_eventattributes.asp
+            // as setting them triggers a console.error (which shows up despite the try/catch)
+            // Assumption: these attributes are not used to css
+            node.setAttribute('_' + name, value.toString());
+          } else if (
+            tagName === 'meta' &&
+            n.attributes['http-equiv'] === 'Content-Security-Policy' &&
+            name === 'content'
+          ) {
+            // If CSP contains style-src and inline-style is disabled, there will be an error "Refused to apply inline style because it violates the following Content Security Policy directive: style-src '*'".
+            // And the function insertStyleRules in rrweb replayer will throw an error "Uncaught TypeError: Cannot read property 'insertRule' of null".
+            node.setAttribute('csp-content', value.toString());
             continue;
+          } else if (
+            tagName === 'link' &&
+            (n.attributes.rel === 'preload' ||
+              n.attributes.rel === 'modulepreload') &&
+            n.attributes.as === 'script'
+          ) {
+            // ignore
+          } else if (
+            tagName === 'link' &&
+            n.attributes.rel === 'prefetch' &&
+            typeof n.attributes.href === 'string' &&
+            n.attributes.href.endsWith('.js')
+          ) {
+            // ignore
+          } else if (
+            tagName === 'img' &&
+            n.attributes.srcset &&
+            n.attributes.rr_dataURL
+          ) {
+            // backup original img srcset
+            node.setAttribute(
+              'rrweb-original-srcset',
+              n.attributes.srcset as string,
+            );
+          } else {
+            node.setAttribute(name, value.toString());
           }
+        } catch (error) {
+          // skip invalid attribute
+        }
+      }
 
-          try {
-            if (n.isSVG && name === 'xlink:href') {
-              node.setAttributeNS('http://www.w3.org/1999/xlink', name, value);
-            } else if (
-              name === 'onload' ||
-              name === 'onclick' ||
-              name.substring(0, 7) === 'onmouse'
-            ) {
-              // Rename some of the more common atttributes from https://www.w3schools.com/tags/ref_eventattributes.asp
-              // as setting them triggers a console.error (which shows up despite the try/catch)
-              // Assumption: these attributes are not used to css
-              node.setAttribute('_' + name, value);
-            } else if (
-              tagName === 'meta' &&
-              n.attributes['http-equiv'] === 'Content-Security-Policy' &&
-              name === 'content'
-            ) {
-              // If CSP contains style-src and inline-style is disabled, there will be an error "Refused to apply inline style because it violates the following Content Security Policy directive: style-src '*'".
-              // And the function insertStyleRules in rrweb replayer will throw an error "Uncaught TypeError: Cannot read property 'insertRule' of null".
-              node.setAttribute('csp-content', value);
-              continue;
-            } else if (
-              tagName === 'link' &&
-              n.attributes.rel === 'preload' &&
-              n.attributes.as === 'script'
-            ) {
-              // ignore
-            } else if (
-              tagName === 'link' &&
-              n.attributes.rel === 'prefetch' &&
-              typeof n.attributes.href === 'string' &&
-              n.attributes.href.endsWith('.js')
-            ) {
-              // ignore
-            } else if (
-              tagName === 'img' &&
-              n.attributes.srcset &&
-              n.attributes.rr_dataURL
-            ) {
-              // backup original img srcset
-              node.setAttribute(
-                'rrweb-original-srcset',
-                n.attributes.srcset as string,
-              );
-            } else {
-              node.setAttribute(name, value);
+      for (const name in specialAttributes) {
+        const value = specialAttributes[name];
+        // handle internal attributes
+        if (tagName === 'canvas' && name === 'rr_dataURL') {
+          const image = doc.createElement('img');
+          image.onload = () => {
+            const ctx = (node as HTMLCanvasElement).getContext('2d');
+            if (ctx) {
+              ctx.drawImage(image, 0, 0, image.width, image.height);
             }
-          } catch (error) {
-            // skip invalid attribute
+          };
+          image.src = value.toString();
+          type RRCanvasElement = {
+            RRNodeType: NodeType;
+            rr_dataURL: string;
+          };
+          // If the canvas element is created in RRDom runtime (seeking to a time point), the canvas context isn't supported. So the data has to be stored and not handled until diff process. https://github.com/rrweb-io/rrweb/pull/944
+          if ((node as unknown as RRCanvasElement).RRNodeType)
+            (node as unknown as RRCanvasElement).rr_dataURL = value.toString();
+        } else if (tagName === 'img' && name === 'rr_dataURL') {
+          const image = node as HTMLImageElement;
+          if (!image.currentSrc.startsWith('data:')) {
+            // Backup original img src. It may not have been set yet.
+            image.setAttribute(
+              'rrweb-original-src',
+              n.attributes.src as string,
+            );
+            image.src = value.toString();
           }
-        } else {
-          // handle internal attributes
-          if (tagName === 'canvas' && name === 'rr_dataURL') {
-            const image = document.createElement('img');
-            image.src = value;
-            image.onload = () => {
-              const ctx = (node as HTMLCanvasElement).getContext('2d');
-              if (ctx) {
-                ctx.drawImage(image, 0, 0, image.width, image.height);
-              }
-            };
-          } else if (tagName === 'img' && name === 'rr_dataURL') {
-            const image = node as HTMLImageElement;
-            if (!image.currentSrc.startsWith('data:')) {
-              // Backup original img src. It may not have been set yet.
-              image.setAttribute(
-                'rrweb-original-src',
-                n.attributes.src as string,
-              );
-              image.src = value;
-            }
-          }
+        }
 
-          if (name === 'rr_width') {
-            (node as HTMLElement).style.width = value;
-          } else if (name === 'rr_height') {
-            (node as HTMLElement).style.height = value;
-          } else if (name === 'rr_mediaCurrentTime') {
-            (node as HTMLMediaElement).currentTime = n.attributes
-              .rr_mediaCurrentTime as number;
-          } else if (name === 'rr_mediaState') {
-            switch (value) {
-              case 'played':
-                (node as HTMLMediaElement)
-                  .play()
-                  .catch((e) => console.warn('media playback error', e));
-                break;
-              case 'paused':
-                (node as HTMLMediaElement).pause();
-                break;
-              default:
-            }
+        if (name === 'rr_width') {
+          (node as HTMLElement).style.setProperty('width', value.toString());
+        } else if (name === 'rr_height') {
+          (node as HTMLElement).style.setProperty('height', value.toString());
+        } else if (
+          name === 'rr_mediaCurrentTime' &&
+          typeof value === 'number'
+        ) {
+          (node as HTMLMediaElement).currentTime = value;
+        } else if (name === 'rr_mediaState') {
+          switch (value) {
+            case 'played':
+              (node as HTMLMediaElement)
+                .play()
+                .catch((e) => console.warn('media playback error', e));
+              break;
+            case 'paused':
+              (node as HTMLMediaElement).pause();
+              break;
+            default:
           }
+        } else if (
+          name === 'rr_mediaPlaybackRate' &&
+          typeof value === 'number'
+        ) {
+          (node as HTMLMediaElement).playbackRate = value;
+        } else if (name === 'rr_mediaMuted' && typeof value === 'boolean') {
+          (node as HTMLMediaElement).muted = value;
+        } else if (name === 'rr_mediaLoop' && typeof value === 'boolean') {
+          (node as HTMLMediaElement).loop = value;
+        } else if (name === 'rr_mediaVolume' && typeof value === 'number') {
+          (node as HTMLMediaElement).volume = value;
+        } else if (name === 'rr_open_mode') {
+          (node as HTMLDialogElement).setAttribute(
+            'rr_open_mode',
+            value as string,
+          ); // keep this attribute for rrweb to trigger showModal
         }
       }
 
@@ -290,12 +385,13 @@ function buildNode(
         }
       }
       return node;
+    }
     case NodeType.Text:
-      return doc.createTextNode(
-        n.isStyle && hackCss
-          ? addHoverClass(n.textContent, cache)
-          : n.textContent,
-      );
+      if (n.isStyle && hackCss) {
+        // support legacy style
+        return doc.createTextNode(adaptCssForReplay(n.textContent, cache));
+      }
+      return doc.createTextNode(n.textContent);
     case NodeType.CDATA:
       return doc.createCDATASection(n.textContent);
     case NodeType.Comment:
@@ -312,7 +408,11 @@ export function buildNodeWithSN(
     mirror: Mirror;
     skipChild?: boolean;
     hackCss: boolean;
-    afterAppend?: (n: Node) => unknown;
+    /**
+     * This callback will be called for each of this nodes' `.childNodes` after they are appended to _this_ node.
+     * Caveat: This callback _doesn't_ get called when this node is appended to the DOM.
+     */
+    afterAppend?: (n: Node, id: number) => unknown;
     cache: BuildCache;
   },
 ): Node | null {
@@ -324,15 +424,26 @@ export function buildNodeWithSN(
     afterAppend,
     cache,
   } = options;
+  /**
+   * Add a check to see if the node is already in the mirror. If it is, we can skip the whole process.
+   * This situation (duplicated nodes) can happen when recorder has some unfixed bugs and the same node is recorded twice. Or something goes wrong when saving or transferring event data.
+   * Duplicated node creation may cause unexpected errors in replayer. This check tries best effort to prevent the errors.
+   */
+  if (mirror.has(n.id)) {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const nodeInMirror = mirror.getNode(n.id)!;
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    const meta = mirror.getMeta(nodeInMirror)!;
+    // For safety concern, check if the node in mirror is the same as the node we are trying to build
+    if (isNodeMetaEqual(meta, n)) return mirror.getNode(n.id);
+  }
   let node = buildNode(n, { doc, hackCss, cache });
   if (!node) {
     return null;
   }
-  if (n.rootId) {
-    console.assert(
-      (mirror.getNode(n.rootId) as Document) === doc,
-      'Target document should have the same root id.',
-    );
+  // If the snapshot is created by checkout, the rootId doesn't change but the iframe's document can be changed automatically when a new iframe element is created.
+  if (n.rootId && (mirror.getNode(n.rootId) as Document) !== doc) {
+    mirror.replace(n.rootId, doc);
   }
   // use target document as root document
   if (n.type === NodeType.Document) {
@@ -386,11 +497,33 @@ export function buildNodeWithSN(
 
       if (childN.isShadow && isElement(node) && node.shadowRoot) {
         node.shadowRoot.appendChild(childNode);
+      } else if (
+        n.type === NodeType.Document &&
+        childN.type == NodeType.Element
+      ) {
+        const htmlElement = childNode as HTMLElement;
+        let body: HTMLBodyElement | null = null;
+        htmlElement.childNodes.forEach((child) => {
+          if (child.nodeName === 'BODY') body = child as HTMLBodyElement;
+        });
+        if (body) {
+          // this branch solves a problem in Firefox where css transitions are incorrectly
+          // being applied upon rebuild.  Presumably FF doesn't finished parsing the styles
+          // in time, and applies e.g. a default margin:0 to elements which have a non-zero
+          // margin set in CSS, along with a transition on them
+          htmlElement.removeChild(body);
+          // append <head> and <style>s
+          node.appendChild(childNode);
+          // now append <body>
+          htmlElement.appendChild(body);
+        } else {
+          node.appendChild(childNode);
+        }
       } else {
         node.appendChild(childNode);
       }
       if (afterAppend) {
-        afterAppend(childNode);
+        afterAppend(childNode, childN.id);
       }
     }
   }
@@ -405,6 +538,7 @@ function visit(mirror: Mirror, onVisit: (node: Node) => void) {
 
   for (const id of mirror.getIds()) {
     if (mirror.has(id)) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       walk(mirror.getNode(id)!);
     }
   }
@@ -417,7 +551,12 @@ function handleScroll(node: Node, mirror: Mirror) {
   }
   const el = node as HTMLElement;
   for (const name in n.attributes) {
-    if (!(n.attributes.hasOwnProperty(name) && name.startsWith('rr_'))) {
+    if (
+      !(
+        Object.prototype.hasOwnProperty.call(n.attributes, name) &&
+        name.startsWith('rr_')
+      )
+    ) {
       continue;
     }
     const value = n.attributes[name];
@@ -436,7 +575,7 @@ function rebuild(
     doc: Document;
     onVisit?: (node: Node) => unknown;
     hackCss?: boolean;
-    afterAppend?: (n: Node) => unknown;
+    afterAppend?: (n: Node, id: number) => unknown;
     cache: BuildCache;
     mirror: Mirror;
   },

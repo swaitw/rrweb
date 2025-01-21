@@ -19,7 +19,16 @@ body:
         - rrweb-snapshot
         - rrdom
         - rrweb-player
+        - web-extension
+        - rrvideo
         - Other (specify below)
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Version
+      description: What's the version of the package?
+      placeholder: v1.0.0
     validations:
       required: true
   - type: textarea
@@ -32,6 +41,12 @@ body:
     attributes:
       label: Actual Behavior
       description: A clear description of what actually happens.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to Reproduce
+      description: Describe detailed steps for reproducing the issue.
     validations:
       required: true
   - type: input

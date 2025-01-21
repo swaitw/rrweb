@@ -1,8 +1,8 @@
 import { encode } from 'base64-arraybuffer';
-import type { IWindow, CanvasArg } from '../../../types';
+import type { IWindow, CanvasArg } from '@rrweb/types';
 
 // TODO: unify with `replay/webgl.ts`
-type CanvasVarMap = Map<string, any[]>;
+type CanvasVarMap = Map<string, unknown[]>;
 const canvasVarMap: Map<RenderingContext, CanvasVarMap> = new Map();
 export function variableListFor(ctx: RenderingContext, ctor: string) {
   let contextMap = canvasVarMap.get(ctx);
@@ -13,11 +13,11 @@ export function variableListFor(ctx: RenderingContext, ctor: string) {
   if (!contextMap.has(ctor)) {
     contextMap.set(ctor, []);
   }
-  return contextMap.get(ctor) as any[];
+  return contextMap.get(ctor) as unknown[];
 }
 
 export const saveWebGLVar = (
-  value: any,
+  value: unknown,
   win: IWindow,
   ctx: RenderingContext,
 ): number | void => {
@@ -40,7 +40,7 @@ export const saveWebGLVar = (
 
 // from webgl-recorder: https://github.com/evanw/webgl-recorder/blob/bef0e65596e981ee382126587e2dcbe0fc7748e2/webgl-recorder.js#L50-L77
 export function serializeArg(
-  value: any,
+  value: unknown,
   win: IWindow,
   ctx: RenderingContext,
 ): CanvasArg {
@@ -125,19 +125,19 @@ export function serializeArg(
     };
   }
 
-  return value;
+  return value as unknown as CanvasArg;
 }
 
 export const serializeArgs = (
-  args: Array<any>,
+  args: Array<unknown>,
   win: IWindow,
   ctx: RenderingContext,
 ) => {
-  return [...args].map((arg) => serializeArg(arg, win, ctx));
+  return args.map((arg) => serializeArg(arg, win, ctx));
 };
 
 export const isInstanceOfWebGLObject = (
-  value: any,
+  value: unknown,
   win: IWindow,
 ): value is
   | WebGLActiveInfo

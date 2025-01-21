@@ -15,6 +15,9 @@ declare global {
   }
 }
 
+import { EventType, IncrementalSource } from '@rrweb/types';
+import type { eventWithTime } from '@rrweb/types';
+
 export function inlineCss(cssObj: Record<string, string>): string {
   let style = '';
   Object.keys(cssObj).forEach((key) => {
@@ -65,6 +68,7 @@ export function openFullscreen(el: HTMLElement): Promise<void> {
     /* IE/Edge */
     return el.msRequestFullscreen();
   }
+  return Promise.resolve();
 }
 
 export function exitFullscreen(): Promise<void> {
@@ -80,15 +84,24 @@ export function exitFullscreen(): Promise<void> {
     /* IE/Edge */
     return document.msExitFullscreen();
   }
+  return Promise.resolve();
 }
 
 export function isFullscreen(): boolean {
-  return (
-    document.fullscreen ||
-    document.webkitIsFullScreen ||
-    document.mozFullScreen ||
-    document.msFullscreenElement
-  );
+  let fullscreen = false;
+  (
+    [
+      'fullscreen',
+      'webkitIsFullScreen',
+      'mozFullScreen',
+      'msFullscreenElement',
+    ] as const
+  ).forEach((fullScreenAccessor) => {
+    if (fullScreenAccessor in document) {
+      fullscreen = fullscreen || Boolean(document[fullScreenAccessor]);
+    }
+  });
+  return fullscreen;
 }
 
 export function onFullscreenChange(handler: () => unknown): () => void {
@@ -118,6 +131,7 @@ export function typeOf(
   | 'undefined'
   | 'null'
   | 'object' {
+  // eslint-disable-next-line @typescript-eslint/unbound-method
   const toString = Object.prototype.toString;
   const map = {
     '[object Boolean]': 'boolean',
@@ -130,6 +144,45 @@ export function typeOf(
     '[object Undefined]': 'undefined',
     '[object Null]': 'null',
     '[object Object]': 'object',
-  };
-  return map[toString.call(obj)];
+  } as const;
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-member-access
+  return map[toString.call(obj) as keyof typeof map];
+}
+
+/**
+ * Forked from 'rrweb' replay/index.ts. The original function is not exported.
+ * Determine whether the event is a user interaction event
+ * @param event - event to be determined
+ * @returns true if the event is a user interaction event
+ */
+function isUserInteraction(event: eventWithTime): boolean {
+  if (event.type !== EventType.IncrementalSnapshot) {
+    return false;
+  }
+  return (
+    event.data.source > IncrementalSource.Mutation &&
+    event.data.source <= IncrementalSource.Input
+  );
+}
+
+/**
+ * Get periods of time when no user interaction happened from a list of events.
+ * @param events - all events
+ * @param inactivePeriodThreshold - threshold of inactive time in milliseconds
+ * @returns periods of time consist with [start time, end time]
+ */
+export function getInactivePeriods(
+  events: eventWithTime[],
+  inactivePeriodThreshold: number,
+) {
+  const inactivePeriods: [number, number][] = [];
+  let lastActiveTime = events[0].timestamp;
+  for (const event of events) {
+    if (!isUserInteraction(event)) continue;
+    if (event.timestamp - lastActiveTime > inactivePeriodThreshold) {
+      inactivePeriods.push([lastActiveTime, event.timestamp]);
+    }
+    lastActiveTime = event.timestamp;
+  }
+  return inactivePeriods;
 }

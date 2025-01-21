@@ -1,5 +1,5 @@
 /**
- * @jest-environment jsdom
+ * @vitest-environment jsdom
  */
 import { polyfillWebGLGlobals } from '../utils';
 polyfillWebGLGlobals();
@@ -11,7 +11,7 @@ import {
   IncrementalSource,
   EventType,
   eventWithTime,
-} from '../../src/types';
+} from '@rrweb/types';
 
 let replayer: Replayer;
 
